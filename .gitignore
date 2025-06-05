@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+ki_backend_env/
+venv/
+env/
+*.env
+.venv/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Settings file (kann sensible Daten enthalten oder nutzerspezifisch sein)
+# Wir erstellen sie auf dem Server, also nicht versionieren.
+settings.json 
+
+# IDE / Editor specific files
+.idea/
+.vscode/
+*.swp
+*.swo
