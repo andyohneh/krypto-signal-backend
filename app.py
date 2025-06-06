@@ -3,13 +3,14 @@ from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 import requests
 import random
+import json # KORREKTUR: Fehlender Import hinzugefügt
 import os
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 import joblib
 import warnings
-import firebase_admin # NEU
-from firebase_admin import credentials, messaging # NEU
+import firebase_admin
+from firebase_admin import credentials, messaging
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
@@ -17,7 +18,6 @@ app = Flask(__name__)
 
 # --- Firebase Admin SDK Initialisierung ---
 try:
-    # Lese die Service-Account-Informationen aus der Umgebungsvariable
     firebase_cred_json_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
     if firebase_cred_json_str:
         firebase_cred_json = json.loads(firebase_cred_json_str)
@@ -25,20 +25,18 @@ try:
         firebase_admin.initialize_app(cred)
         print("Firebase Admin SDK erfolgreich initialisiert.")
     else:
-        print("WARNUNG: FIREBASE_SERVICE_ACCOUNT_JSON Umgebungsvariable nicht gefunden. Benachrichtigungen können nicht gesendet werden.")
+        print("WARNUNG: FIREBASE_SERVICE_ACCOUNT_JSON Umgebungsvariable nicht gefunden.")
 except Exception as e:
     print(f"FEHLER bei der Initialisierung von Firebase Admin: {e}")
-# ----------------------------------------
 
 # --- Datenbank-Konfiguration ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
-# ... (Der Rest deines Codes von Settings, load_settings, save_settings etc. bleibt hier)
-# --- API-Keys ---
+
+# ... (Der Rest des Codes bleibt exakt gleich wie vorher)
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY')
 FMP_API_KEY = os.environ.get('FMP_API_KEY')
-
 MODEL_FILENAME = "trading_model.joblib"
 ml_model = None
 current_settings = {}
@@ -95,8 +93,6 @@ def home():
 
 @app.route('/get_signals')
 def get_signals():
-    # Diese Funktion bleibt unverändert
-    # ... (kompletter Code der get_signals Funktion) ...
     global current_settings, ml_model; bitcoin_data = {}; gold_data = {}; global_error_message = ""
     if ml_model is None: global_error_message = "ML-Modell Ladefehler."
     elif not BINANCE_API_KEY or not FMP_API_KEY: global_error_message = "API-Keys nicht konfiguriert."
@@ -126,44 +122,33 @@ def get_signals():
     if global_error_message: response_data["global_error"] = global_error_message.strip()
     return jsonify(response_data)
 
-
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
-    # Diese Funktion bleibt unverändert
     global current_settings; data = request.get_json() 
     if data:
         current_settings.update(data); save_settings(current_settings)
         return jsonify({"status": "success", "message": "Settings saved to DB."})
     return jsonify({"status": "error", "message": "No JSON data received."}), 400
 
-# NEUER ENDPUNKT ZUM SENDEN EINER TEST-NACHRICHT
 @app.route('/send_test_notification', methods=['POST'])
 def send_test_notification():
     data = request.get_json()
-    token = data.get('token') # Erwarte den Geräte-Token von der App
-
-    if not token:
-        return jsonify({"status": "error", "message": "Kein Geräte-Token erhalten."}), 400
-
+    token = data.get('token')
+    if not token: return jsonify({"status": "error", "message": "Kein Geräte-Token erhalten."}), 400
     try:
-        # Erstelle die Nachricht
         message = messaging.Message(
             notification=messaging.Notification(
                 title='Test-Nachricht vom Krypto Helfer!',
                 body='Wenn du das siehst, funktioniert alles! 🎉',
             ),
-            token=token, # Sende an dieses spezifische Gerät
+            token=token,
         )
-
-        # Sende die Nachricht
         response = messaging.send(message)
         print('Nachricht erfolgreich gesendet:', response)
         return jsonify({"status": "success", "message": f"Nachricht gesendet an {token}"})
-
     except Exception as e:
         print(f"Fehler beim Senden der Nachricht: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
