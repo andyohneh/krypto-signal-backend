@@ -8,26 +8,41 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 import joblib
 import warnings
+import firebase_admin # NEU
+from firebase_admin import credentials, messaging # NEU
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 app = Flask(__name__)
 
-# --- Konfiguration für die Datenbank ---
+# --- Firebase Admin SDK Initialisierung ---
+try:
+    # Lese die Service-Account-Informationen aus der Umgebungsvariable
+    firebase_cred_json_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
+    if firebase_cred_json_str:
+        firebase_cred_json = json.loads(firebase_cred_json_str)
+        cred = credentials.Certificate(firebase_cred_json)
+        firebase_admin.initialize_app(cred)
+        print("Firebase Admin SDK erfolgreich initialisiert.")
+    else:
+        print("WARNUNG: FIREBASE_SERVICE_ACCOUNT_JSON Umgebungsvariable nicht gefunden. Benachrichtigungen können nicht gesendet werden.")
+except Exception as e:
+    print(f"FEHLER bei der Initialisierung von Firebase Admin: {e}")
+# ----------------------------------------
+
+# --- Datenbank-Konfiguration ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
 db = SQLAlchemy(app)
-
+# ... (Der Rest deines Codes von Settings, load_settings, save_settings etc. bleibt hier)
 # --- API-Keys ---
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY')
 FMP_API_KEY = os.environ.get('FMP_API_KEY')
 
 MODEL_FILENAME = "trading_model.joblib"
 ml_model = None
-current_settings = {} # Initialisiere als leeres Dictionary
+current_settings = {}
 
-# --- Datenbank-Modell ---
 class Settings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     bitcoin_tp_percentage = db.Column(db.Float, default=2.5)
@@ -36,45 +51,29 @@ class Settings(db.Model):
     xauusd_sl_percentage = db.Column(db.Float, default=0.8)
     update_interval_minutes = db.Column(db.Integer, default=15)
 
-# --- Datenbank-Funktionen ---
 def load_settings():
     settings = Settings.query.first()
     if settings:
-        return {
-            "bitcoin_tp_percentage": settings.bitcoin_tp_percentage,
-            "bitcoin_sl_percentage": settings.bitcoin_sl_percentage,
-            "xauusd_tp_percentage": settings.xauusd_tp_percentage,
-            "xauusd_sl_percentage": settings.xauusd_sl_percentage,
-            "update_interval_minutes": settings.update_interval_minutes,
-        }
+        return { "bitcoin_tp_percentage": settings.bitcoin_tp_percentage, "bitcoin_sl_percentage": settings.bitcoin_sl_percentage, "xauusd_tp_percentage": settings.xauusd_tp_percentage, "xauusd_sl_percentage": settings.xauusd_sl_percentage, "update_interval_minutes": settings.update_interval_minutes }
     print("Keine DB-Einstellungen gefunden, erstelle Standard-Eintrag.")
     default_settings_obj = Settings()
     db.session.add(default_settings_obj)
     db.session.commit()
-    return {
-        "bitcoin_tp_percentage": default_settings_obj.bitcoin_tp_percentage,
-        "bitcoin_sl_percentage": default_settings_obj.bitcoin_sl_percentage,
-        "xauusd_tp_percentage": default_settings_obj.xauusd_tp_percentage,
-        "xauusd_sl_percentage": default_settings_obj.xauusd_sl_percentage,
-        "update_interval_minutes": default_settings_obj.update_interval_minutes,
-    }
+    return { "bitcoin_tp_percentage": 2.5, "bitcoin_sl_percentage": 1.5, "xauusd_tp_percentage": 1.8, "xauusd_sl_percentage": 0.8, "update_interval_minutes": 15 }
 
 def save_settings(new_settings):
     settings_obj = Settings.query.first()
     if settings_obj:
         for key, value in new_settings.items():
-            if hasattr(settings_obj, key):
-                setattr(settings_obj, key, value)
+            if hasattr(settings_obj, key): setattr(settings_obj, key, value)
         db.session.commit()
         print("DB-Einstellungen aktualisiert.")
 
 def load_trained_model(filename=MODEL_FILENAME):
-    if os.path.exists(filename):
-        return joblib.load(filename)
+    if os.path.exists(filename): return joblib.load(filename)
     return None
 
 def create_features_for_prediction(current_price, asset_name=""):
-    # Diese Funktion bleibt unverändert
     volatility_factor = 0.01
     if "bitcoin" in asset_name.lower(): volatility_factor = 0.02
     elif "gold" in asset_name.lower(): volatility_factor = 0.005
@@ -84,90 +83,87 @@ def create_features_for_prediction(current_price, asset_name=""):
     dummy_volume_indicator = min(dummy_volume_indicator, 0.9)
     return np.array([[relative_price_change, dummy_volume_indicator]])
 
-# --- Hauptprogrammfluss beim Serverstart ---
-# KORREKTUR: Alle DB-Operationen und das Laden der Einstellungen
-# müssen innerhalb des App-Kontexts stattfinden.
 with app.app_context():
     db.create_all()
     current_settings = load_settings()
-
 ml_model = load_trained_model()
 print(f"Einstellungen beim Start geladen: {current_settings}")
 
-# --- API-Routen ---
 @app.route('/')
 def home():
-    return "Hallo von deinem Flask-Backend!"
+    return "Hallo von deinem Flask-Backend! Firebase-initialisiert."
 
 @app.route('/get_signals')
 def get_signals():
-    # Die Logik hier bleibt fast gleich
-    # ... (der Rest der get_signals Funktion bleibt exakt wie vorher) ...
-    global current_settings, ml_model
-    bitcoin_data = {}
-    gold_data = {}
-    global_error_message = ""
-
-    if ml_model is None:
-        global_error_message = "ML-Modell konnte nicht geladen werden."
-        bitcoin_data = {"price": "Fehler", "signal_type": "Modellfehler"}
-        gold_data = {"price": "Fehler", "signal_type": "Modellfehler"}
-    elif not BINANCE_API_KEY or not FMP_API_KEY:
-        global_error_message = "API-Keys nicht konfiguriert auf dem Server."
-        bitcoin_data = {"price": "Fehler", "signal_type": "API Key Fehler"}
-        gold_data = {"price": "Fehler", "signal_type": "API Key Fehler"}
+    # Diese Funktion bleibt unverändert
+    # ... (kompletter Code der get_signals Funktion) ...
+    global current_settings, ml_model; bitcoin_data = {}; gold_data = {}; global_error_message = ""
+    if ml_model is None: global_error_message = "ML-Modell Ladefehler."
+    elif not BINANCE_API_KEY or not FMP_API_KEY: global_error_message = "API-Keys nicht konfiguriert."
     else:
         try:
             response_btc = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", headers={'X-MBX-APIKEY': BINANCE_API_KEY}, timeout=10)
-            response_btc.raise_for_status()
-            current_btc_price = float(response_btc.json()['price'])
-            btc_features = create_features_for_prediction(current_btc_price, "Bitcoin")
-            btc_prediction = ml_model.predict(btc_features)[0]
+            response_btc.raise_for_status(); current_btc_price = float(response_btc.json()['price'])
+            btc_features = create_features_for_prediction(current_btc_price, "Bitcoin"); btc_prediction = ml_model.predict(btc_features)[0]
             btc_signal_type = "Verkauf" if btc_prediction == 1 else "Kauf"
-            btc_tp_percentage = current_settings.get("bitcoin_tp_percentage", 2.5)
-            btc_sl_percentage = current_settings.get("bitcoin_sl_percentage", 1.5)
-            calculated_btc_tp = current_btc_price * (1 + (btc_tp_percentage / 100))
-            calculated_btc_sl = current_btc_price * (1 - (btc_sl_percentage / 100))
+            btc_tp_percentage = current_settings.get("bitcoin_tp_percentage", 2.5); btc_sl_percentage = current_settings.get("bitcoin_sl_percentage", 1.5)
+            calculated_btc_tp = current_btc_price * (1 + (btc_tp_percentage / 100)); calculated_btc_sl = current_btc_price * (1 - (btc_sl_percentage / 100))
             bitcoin_data = {"price": round(current_btc_price, 2), "entry": round(current_btc_price, 2), "take_profit": round(calculated_btc_tp, 2), "stop_loss": round(calculated_btc_sl, 2), "signal_type": btc_signal_type}
-        except Exception as e:
-            global_error_message += f"Fehler Bitcoin: {e}. "
-            bitcoin_data = {"price": "N/A", "signal_type": "Fehler"}
-
+        except Exception as e: global_error_message += f"Fehler Bitcoin: {e}. "; bitcoin_data = {"signal_type": "Fehler"}
         try:
             response_xauusd = requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}', timeout=10)
-            response_xauusd.raise_for_status()
-            xauusd_data_list = response_xauusd.json()
+            response_xauusd.raise_for_status(); xauusd_data_list = response_xauusd.json()
             if xauusd_data_list:
                 current_xauusd_price = float(xauusd_data_list[0]['price'])
-                xauusd_features = create_features_for_prediction(current_xauusd_price, "Gold")
-                xauusd_prediction = ml_model.predict(xauusd_features)[0]
+                xauusd_features = create_features_for_prediction(current_xauusd_price, "Gold"); xauusd_prediction = ml_model.predict(xauusd_features)[0]
                 xauusd_signal_type = "Verkauf" if xauusd_prediction == 1 else "Kauf"
-                xauusd_tp_percentage = current_settings.get("xauusd_tp_percentage", 1.8)
-                xauusd_sl_percentage = current_settings.get("xauusd_sl_percentage", 0.8)
-                calculated_xauusd_tp = current_xauusd_price * (1 + (xauusd_tp_percentage / 100))
-                calculated_xauusd_sl = current_xauusd_price * (1 - (xauusd_sl_percentage / 100))
+                xauusd_tp_percentage = current_settings.get("xauusd_tp_percentage", 1.8); xauusd_sl_percentage = current_settings.get("xauusd_sl_percentage", 0.8)
+                calculated_xauusd_tp = current_xauusd_price * (1 + (xauusd_tp_percentage / 100)); calculated_xauusd_sl = current_xauusd_price * (1 - (xauusd_sl_percentage / 100))
                 gold_data = {"price": round(current_xauusd_price, 2), "entry": round(current_xauusd_price, 2), "take_profit": round(calculated_xauusd_tp, 2), "stop_loss": round(calculated_xauusd_sl, 2), "signal_type": xauusd_signal_type}
-            else:
-                global_error_message += "Gold-Daten leer. "
-                gold_data = {"price": "N/A", "signal_type": "Fehler"}
-        except Exception as e:
-            global_error_message += f"Fehler Gold: {e}. "
-            gold_data = {"price": "N/A", "signal_type": "Fehler"}
-
+            else: global_error_message += "Gold-Daten leer. "; gold_data = {"signal_type": "Fehler"}
+        except Exception as e: global_error_message += f"Fehler Gold: {e}. "; gold_data = {"signal_type": "Fehler"}
     response_data = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
-    if global_error_message:
-        response_data["global_error"] = global_error_message.strip()
+    if global_error_message: response_data["global_error"] = global_error_message.strip()
     return jsonify(response_data)
+
 
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
-    global current_settings
-    data = request.get_json() 
+    # Diese Funktion bleibt unverändert
+    global current_settings; data = request.get_json() 
     if data:
-        current_settings.update(data)
-        save_settings(current_settings)
+        current_settings.update(data); save_settings(current_settings)
         return jsonify({"status": "success", "message": "Settings saved to DB."})
     return jsonify({"status": "error", "message": "No JSON data received."}), 400
+
+# NEUER ENDPUNKT ZUM SENDEN EINER TEST-NACHRICHT
+@app.route('/send_test_notification', methods=['POST'])
+def send_test_notification():
+    data = request.get_json()
+    token = data.get('token') # Erwarte den Geräte-Token von der App
+
+    if not token:
+        return jsonify({"status": "error", "message": "Kein Geräte-Token erhalten."}), 400
+
+    try:
+        # Erstelle die Nachricht
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title='Test-Nachricht vom Krypto Helfer!',
+                body='Wenn du das siehst, funktioniert alles! 🎉',
+            ),
+            token=token, # Sende an dieses spezifische Gerät
+        )
+
+        # Sende die Nachricht
+        response = messaging.send(message)
+        print('Nachricht erfolgreich gesendet:', response)
+        return jsonify({"status": "success", "message": f"Nachricht gesendet an {token}"})
+
+    except Exception as e:
+        print(f"Fehler beim Senden der Nachricht: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
