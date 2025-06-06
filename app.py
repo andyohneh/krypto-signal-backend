@@ -1,39 +1,61 @@
 # app.py
 from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy # NEU
 import requests
 import random
-import json
 import os
 import numpy as np
-from sklearn.linear_model import LogisticRegression # Bleibt für Typ-Annotation, aber nicht mehr zum Trainieren hier
-import joblib # Wichtig zum Laden des Modells
+from sklearn.linear_model import LogisticRegression
+import joblib
 import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 app = Flask(__name__)
 
-# --- API-Keys aus Umgebungsvariablen lesen ---
+# --- Konfiguration für die Datenbank ---
+# Die URL wird aus den Umgebungsvariablen von Render gelesen
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app) # Initialisiert die Datenbank-Verbindung
+
+# --- API-Keys (werden weiterhin aus Umgebungsvariablen gelesen) ---
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY')
 FMP_API_KEY = os.environ.get('FMP_API_KEY')
-# -------------------------------------------
 
-SETTINGS_FILE = 'settings.json'
-MODEL_FILENAME = "trading_model.joblib" # Name der Modelldatei
+MODEL_FILENAME = "trading_model.joblib"
+ml_model = None
 
-ml_model = None # Globale Variable für das geladene Modell
+# --- Datenbank-Modell für unsere Einstellungen ---
+# Definiert, wie unsere "settings"-Tabelle in der DB aussehen soll
+class Settings(db.Model):
+    id = db.Column(db.Integer, primary_key=True) # Jede Tabelle braucht einen Primärschlüssel
+    bitcoin_tp_percentage = db.Column(db.Float, default=2.5)
+    bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
+    xauusd_tp_percentage = db.Column(db.Float, default=1.8)
+    xauusd_sl_percentage = db.Column(db.Float, default=0.8)
+    update_interval_minutes = db.Column(db.Integer, default=15)
 
+# --- Neue Funktionen zum Laden und Speichern von Einstellungen aus der DB ---
 def load_settings():
-    data_dir = os.environ.get('RENDER_DATA_DIR', '.')
-    settings_path = os.path.join(data_dir, SETTINGS_FILE)
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print(f"Fehler: {settings_path} ist beschädigt. Verwende Standardeinstellungen.")
-            return get_default_settings()
-    return get_default_settings()
+    # Finde den ersten (und einzigen) Einstellungs-Eintrag in der DB
+    settings = Settings.query.first()
+    if settings:
+        # Konvertiere das DB-Objekt in ein Dictionary (ähnlich wie unser altes JSON)
+        return {
+            "bitcoin_tp_percentage": settings.bitcoin_tp_percentage,
+            "bitcoin_sl_percentage": settings.bitcoin_sl_percentage,
+            "xauusd_tp_percentage": settings.xauusd_tp_percentage,
+            "xauusd_sl_percentage": settings.xauusd_sl_percentage,
+            "update_interval_minutes": settings.update_interval_minutes,
+        }
+    # Falls die DB leer ist, erstelle einen Standard-Eintrag
+    print("Keine Einstellungen in der DB gefunden, erstelle Standard-Eintrag.")
+    default_settings_obj = Settings()
+    db.session.add(default_settings_obj)
+    db.session.commit()
+    return get_default_settings() # Gib die Standardwerte zurück
 
 def get_default_settings():
     return {
@@ -42,33 +64,29 @@ def get_default_settings():
         "update_interval_minutes": 15
     }
 
-def save_settings(settings):
-    data_dir = os.environ.get('RENDER_DATA_DIR', '.')
-    settings_path = os.path.join(data_dir, SETTINGS_FILE)
-    if not os.path.exists(data_dir) and data_dir != '.':
-        os.makedirs(data_dir)
-    with open(settings_path, 'w') as f:
-        json.dump(settings, f, indent=4)
-    print(f"Einstellungen gespeichert in: {settings_path}")
+def save_settings(new_settings):
+    # Finde den ersten (und einzigen) Einstellungs-Eintrag
+    settings_obj = Settings.query.first()
+    if settings_obj:
+        # Aktualisiere die Werte des gefundenen Eintrags
+        for key, value in new_settings.items():
+            if hasattr(settings_obj, key):
+                setattr(settings_obj, key, value)
+        db.session.commit() # Speichere die Änderungen in der DB
+        print(f"Einstellungen in DB aktualisiert.")
 
-# NEU: Funktion zum Laden des trainierten Modells
 def load_trained_model(filename=MODEL_FILENAME):
-    model_path = filename # Wenn die Modelldatei im selben Verzeichnis wie app.py liegt
-    if os.path.exists(model_path):
+    if os.path.exists(filename):
         try:
-            loaded_model = joblib.load(model_path)
-            print(f"Modell erfolgreich aus '{model_path}' geladen.")
-            return loaded_model
+            return joblib.load(filename)
         except Exception as e:
-            print(f"Fehler beim Laden des Modells '{model_path}': {e}")
+            print(f"Fehler beim Laden des Modells: {e}")
             return None
-    else:
-        print(f"Modelldatei '{model_path}' nicht gefunden. Kann keine Vorhersagen machen.")
-        return None
-
-# Die alte train_ml_model() Funktion wird ENTFERNT
+    print(f"Modelldatei '{filename}' nicht gefunden.")
+    return None
 
 def create_features_for_prediction(current_price, asset_name=""):
+    # Diese Funktion bleibt unverändert
     volatility_factor = 0.01
     if "bitcoin" in asset_name.lower(): volatility_factor = 0.02
     elif "gold" in asset_name.lower(): volatility_factor = 0.005
@@ -79,22 +97,29 @@ def create_features_for_prediction(current_price, asset_name=""):
     return np.array([[relative_price_change, dummy_volume_indicator]])
 
 # --- Hauptprogrammfluss ---
-current_settings = load_settings()
-ml_model = load_trained_model() # Modell beim Serverstart laden
+# Erstelle die Datenbank-Tabelle(n), falls sie noch nicht existieren
+with app.app_context():
+    db.create_all()
 
+current_settings = load_settings() # Lade Einstellungen aus der DB
+ml_model = load_trained_model()
+
+# --- API-Routen ---
 @app.route('/')
 def home():
-    return "Hallo von deinem Flask-Backend! Einstellungen: " + json.dumps(current_settings)
+    return "Hallo von deinem Flask-Backend! Einstellungen aus DB: " + json.dumps(current_settings)
 
 @app.route('/get_signals')
 def get_signals():
-    global current_settings, ml_model # ml_model ist jetzt global geladen
+    # Die Logik hier bleibt fast gleich, sie verwendet 'current_settings'
+    # ... (kompletter Code der get_signals Funktion von vorher) ...
+    global current_settings, ml_model
     bitcoin_data = {}
     gold_data = {}
     global_error_message = ""
 
-    if ml_model is None: # Prüfen, ob das Modell geladen wurde
-        global_error_message = "ML-Modell konnte nicht geladen werden. Signale sind nicht verfügbar."
+    if ml_model is None:
+        global_error_message = "ML-Modell konnte nicht geladen werden."
         bitcoin_data = {"price": "Fehler", "signal_type": "Modellfehler"}
         gold_data = {"price": "Fehler", "signal_type": "Modellfehler"}
     elif not BINANCE_API_KEY or not FMP_API_KEY:
@@ -102,14 +127,10 @@ def get_signals():
         bitcoin_data = {"price": "Fehler", "signal_type": "API Key Fehler"}
         gold_data = {"price": "Fehler", "signal_type": "API Key Fehler"}
     else:
-        # Bitcoin
-        try:
-            binance_url = 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'
-            headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
-            response_btc = requests.get(binance_url, headers=headers, timeout=10)
+        try: # Bitcoin
+            response_btc = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", headers={'X-MBX-APIKEY': BINANCE_API_KEY}, timeout=10)
             response_btc.raise_for_status()
-            btc_price_data = response_btc.json()
-            current_btc_price = float(btc_price_data['price'])
+            current_btc_price = float(response_btc.json()['price'])
             btc_features = create_features_for_prediction(current_btc_price, "Bitcoin")
             btc_prediction = ml_model.predict(btc_features)[0]
             btc_signal_type = "Verkauf" if btc_prediction == 1 else "Kauf"
@@ -118,20 +139,15 @@ def get_signals():
             calculated_btc_tp = current_btc_price * (1 + (btc_tp_percentage / 100))
             calculated_btc_sl = current_btc_price * (1 - (btc_sl_percentage / 100))
             bitcoin_data = {"price": round(current_btc_price, 2), "entry": round(current_btc_price, 2), "take_profit": round(calculated_btc_tp, 2), "stop_loss": round(calculated_btc_sl, 2), "signal_type": btc_signal_type}
-        except requests.exceptions.RequestException as e:
-            global_error_message += f"Fehler beim Bitcoin-Abruf: {e}. "
-            bitcoin_data = {"price": "Nicht verfügbar", "signal_type": "Fehler"}
         except Exception as e:
-            global_error_message += f"Fehler bei Bitcoin-Verarbeitung: {e}. "
-            bitcoin_data = {"price": "Nicht verfügbar", "signal_type": "Fehler"}
+            global_error_message += f"Fehler Bitcoin: {e}. "
+            bitcoin_data = {"price": "N/A", "signal_type": "Fehler"}
 
-        # Gold
-        try:
-            fmp_url = f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}'
-            response_xauusd = requests.get(fmp_url, timeout=10)
+        try: # Gold
+            response_xauusd = requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}', timeout=10)
             response_xauusd.raise_for_status()
             xauusd_data_list = response_xauusd.json()
-            if xauusd_data_list and isinstance(xauusd_data_list, list) and len(xauusd_data_list) > 0:
+            if xauusd_data_list:
                 current_xauusd_price = float(xauusd_data_list[0]['price'])
                 xauusd_features = create_features_for_prediction(current_xauusd_price, "Gold")
                 xauusd_prediction = ml_model.predict(xauusd_features)[0]
@@ -142,14 +158,11 @@ def get_signals():
                 calculated_xauusd_sl = current_xauusd_price * (1 - (xauusd_sl_percentage / 100))
                 gold_data = {"price": round(current_xauusd_price, 2), "entry": round(current_xauusd_price, 2), "take_profit": round(calculated_xauusd_tp, 2), "stop_loss": round(calculated_xauusd_sl, 2), "signal_type": xauusd_signal_type}
             else:
-                global_error_message += "Gold-Daten von FMP sind leer oder ungültig. "
-                gold_data = {"price": "Nicht verfügbar", "signal_type": "Fehler"}
-        except requests.exceptions.RequestException as e:
-            global_error_message += f"Fehler beim Gold-Abruf: {e}. "
-            gold_data = {"price": "Nicht verfügbar", "signal_type": "Fehler"}
+                global_error_message += "Gold-Daten leer. "
+                gold_data = {"price": "N/A", "signal_type": "Fehler"}
         except Exception as e:
-            global_error_message += f"Fehler bei Gold-Verarbeitung: {e}. "
-            gold_data = {"price": "Nicht verfügbar", "signal_type": "Fehler"}
+            global_error_message += f"Fehler Gold: {e}. "
+            gold_data = {"price": "N/A", "signal_type": "Fehler"}
 
     response_data = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if global_error_message:
@@ -163,12 +176,9 @@ def save_app_settings():
     if data:
         current_settings.update(data)
         save_settings(current_settings)
-        # print(f"Einstellungen aktualisiert und gespeichert: {current_settings}") # Debug-Ausgabe
-        return jsonify({"status": "success", "message": "Settings saved."})
-    else:
-        return jsonify({"status": "error", "message": "No JSON data received."}), 400
+        return jsonify({"status": "success", "message": "Settings saved to DB."})
+    return jsonify({"status": "error", "message": "No JSON data received."}), 400
 
 if __name__ == '__main__':
-    print("Flask-Server wird gestartet...")
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
