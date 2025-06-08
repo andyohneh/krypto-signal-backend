@@ -1,4 +1,4 @@
-# train_model.py (Finale Version - Speichert Modelle in die DB)
+# train_model.py (Finale Version - mit DB-Bugfix)
 
 import os
 import pickle
@@ -27,9 +27,10 @@ def save_artifact_to_db(name, artifact):
     """Serialisiert ein Objekt und speichert es in der DB (Update oder Insert)."""
     print(f"Speichere '{name}' in der Datenbank...")
     pickled_artifact = pickle.dumps(artifact)
-    
+
     with app.app_context():
-        existing_artifact = db.session.get(TrainedModel, name) if hasattr(db.session, 'get') else TrainedModel.query.filter_by(name=name).first()
+        # KORREKTUR: Wir suchen immer nach dem 'name', nicht der 'id'.
+        existing_artifact = TrainedModel.query.filter_by(name=name).first()
 
         if existing_artifact:
             existing_artifact.data = pickled_artifact
@@ -38,7 +39,7 @@ def save_artifact_to_db(name, artifact):
             new_artifact = TrainedModel(name=name, data=pickled_artifact)
             db.session.add(new_artifact)
             print(f"'{name}' neu in der DB erstellt.")
-        
+
         db.session.commit()
 
 def train_model_for_asset(input_filename, model_name, scaler_name):
@@ -57,10 +58,10 @@ def train_model_for_asset(input_filename, model_name, scaler_name):
     X_test_scaled = scaler.transform(X_test)
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train_scaled, y_train)
-    
+
     test_accuracy = model.score(X_test_scaled, y_test)
     print(f"Modell-Genauigkeit auf Test-Daten: {test_accuracy:.2%}")
-    
+
     save_artifact_to_db(name=model_name, artifact=model)
     save_artifact_to_db(name=scaler_name, artifact=scaler)
 
@@ -68,17 +69,7 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
 
-    # KORREKTUR: Verwende die einfachen Namen, nach denen die App sucht
-    train_model_for_asset(
-        "btc_data_with_features.csv",
-        "btc_model",      # Korrekter Name
-        "btc_scaler"      # Korrekter Name
-    )
+    train_model_for_asset("btc_data_with_features.csv", "btc_model", "btc_scaler")
+    train_model_for_asset("gold_data_with_features.csv", "gold_model", "gold_scaler")
 
-    train_model_for_asset(
-        "gold_data_with_features.csv",
-        "gold_model",     # Korrekter Name
-        "gold_scaler"     # Korrekter Name
-    )
-
-    print("\nAlle Modelle und Scaler wurden mit den korrekten Namen in die Datenbank geschrieben.")
+    print("\nAlle Modelle und Scaler wurden in die Datenbank geschrieben.")
