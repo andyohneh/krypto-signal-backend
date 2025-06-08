@@ -154,6 +154,29 @@ def save_app_settings():
     if data: current_settings.update(data); save_settings(current_settings); return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
 
+# NEUER API-ENDPUNKT ZUM REGISTRIEREN VON GERÄTEN
+@app.route('/register_device', methods=['POST'])
+def register_device():
+    data = request.get_json()
+    token = data.get('token')
+
+    if not token:
+        return jsonify({"status": "error", "message": "Kein Token erhalten."}), 400
+
+    with app.app_context():
+        existing_device = Device.query.filter_by(fcm_token=token).first()
+        if existing_device:
+            existing_device.timestamp = func.now()
+            db.session.commit()
+            print(f"Geräte-Token {token[:15]}... bereits vorhanden, Zeitstempel aktualisiert.")
+            return jsonify({"status": "success", "message": "Gerät bereits registriert."})
+        else:
+            new_device = Device(fcm_token=token)
+            db.session.add(new_device)
+            db.session.commit()
+            print(f"Neues Gerät mit Token {token[:15]}... registriert.")
+            return jsonify({"status": "success", "message": "Gerät erfolgreich registriert."})
+
 @app.route('/send_test_notification', methods=['POST'])
 def send_test_notification():
     data = request.get_json(); token = data.get('token')
