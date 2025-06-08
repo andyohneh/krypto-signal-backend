@@ -42,9 +42,10 @@ joblib==1.5.1
 MarkupSafe==3.0.2
 msgpack==1.1.0
 multitasking==0.0.11
-numpy==2.2.6
+numpy==1.26.4
 packaging==25.0
 pandas==2.3.0
+pandas_ta==0.3.14b0
 peewee==3.18.1
 platformdirs==4.3.8
 proto-plus==1.26.1
