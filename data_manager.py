@@ -1,28 +1,35 @@
-# data_manager.py (VEREINFACHTE VERSION)
+# data_manager.py (FINALE VERSION - Bereinigt die Spalten)
+
 import yfinance as yf
+import pandas as pd
 
 def download_historical_data(ticker_symbol, period="1y", interval="1d"):
     """
-    Lädt historische Daten und gibt ein sauberes pandas DataFrame zurück.
+    Lädt historische Daten und gibt ein sauberes pandas DataFrame
+    mit einfachen Spaltennamen zurück.
     """
     print(f"Lade historische Daten für {ticker_symbol}...")
     try:
-        # Lade die Daten
-        data = yf.download(ticker_symbol, period=period, interval=interval, progress=False)
+        data = yf.download(
+            ticker_symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False
+        )
 
         if data.empty:
             print(f"Keine Daten für {ticker_symbol} gefunden.")
             return None
 
-        # Wir benennen die Index-Spalte explizit 'Date'
-        data.index.name = 'Date'
+        # --- DIE FINALE KORREKTUR ---
+        # "Flache" die Spaltenüberschriften ab, falls es ein MultiIndex ist.
+        # ('Adj Close', 'BTC-USD') wird zu 'Adj Close'
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
 
-        print(f"Erfolgreich {len(data)} Datenpunkte für {ticker_symbol} geladen.")
+        print(f"Erfolgreich {len(data)} Datenpunkte geladen und Spalten bereinigt.")
         return data
     except Exception as e:
         print(f"Ein Fehler ist aufgetreten: {e}")
         return None
-
-# Der if __name__ == '__main__': Block wird entfernt,
-# da wir dieses Skript nicht mehr direkt ausführen wollen.
-# Es dient jetzt nur noch als Bibliothek für andere Skripte.
