@@ -1,6 +1,5 @@
-# run_training_pipeline.py
+# run_training_pipeline.py (Finale korrigierte Version)
 
-# Wir importieren die Funktionen, die wir in den anderen Dateien definiert haben
 from feature_engineer import add_features_to_data
 from train_model import train_model_for_asset
 from data_manager import download_historical_data
@@ -11,7 +10,7 @@ def run_full_pipeline():
     """
     print("Starte die vollständige Trainings-Pipeline...")
 
-    # --- Schritt 1 & 2: Daten laden und Features erstellen ---
+    # Schritt 1 & 2: Daten laden und Features erstellen
     print("\nVerarbeite Bitcoin-Daten...")
     btc_raw_data = download_historical_data("BTC-USD")
     btc_featured_data = add_features_to_data(btc_raw_data)
@@ -26,17 +25,19 @@ def run_full_pipeline():
         gold_featured_data.to_csv("gold_data_with_features.csv")
         print("Gold-Daten mit Features erfolgreich gespeichert.")
 
-    # --- Schritt 3: Modelle mit den neuen Daten trainieren ---
+    # Schritt 3: Modelle mit den neuen Daten trainieren
     print("\nTrainiere Modelle mit den neuen Daten...")
+
+    # KORREKTUR: Hier die kurzen Namen verwenden, nach denen die App sucht
     train_model_for_asset(
         "btc_data_with_features.csv",
-        "trained_btc_model.joblib",
-        "btc_scaler.joblib"
+        "btc_model",      # Korrekter Name
+        "btc_scaler"      # Korrekter Name
     )
     train_model_for_asset(
         "gold_data_with_features.csv",
-        "trained_gold_model.joblib",
-        "gold_scaler.joblib"
+        "gold_model",     # Korrekter Name
+        "gold_scaler"     # Korrekter Name
     )
 
     print("\n\nPipeline erfolgreich durchgelaufen! Neue Modelle und Scaler wurden erstellt.")
