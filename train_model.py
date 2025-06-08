@@ -68,6 +68,17 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
 
-    train_model_for_asset("btc_data_with_features.csv", "btc_model", "btc_scaler")
-    train_model_for_asset("gold_data_with_features.csv", "gold_model", "gold_scaler")
-    print("\nAlle Modelle und Scaler wurden in die Datenbank geschrieben.")
+    # KORREKTUR: Verwende die einfachen Namen, nach denen die App sucht
+    train_model_for_asset(
+        "btc_data_with_features.csv",
+        "btc_model",      # Korrekter Name
+        "btc_scaler"      # Korrekter Name
+    )
+
+    train_model_for_asset(
+        "gold_data_with_features.csv",
+        "gold_model",     # Korrekter Name
+        "gold_scaler"     # Korrekter Name
+    )
+
+    print("\nAlle Modelle und Scaler wurden mit den korrekten Namen in die Datenbank geschrieben.")
