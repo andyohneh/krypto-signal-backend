@@ -1,5 +1,3 @@
-# app.py (FINALE PRODUKTIONSVERSION - Lädt Modelle aus der DB)
-
 import os
 import json
 import requests
@@ -7,7 +5,7 @@ import pickle
 import numpy as np
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import LargeBinary
+from sqlalchemy import LargeBinary, func
 import firebase_admin
 from firebase_admin import credentials, messaging
 
@@ -43,7 +41,13 @@ class TrainedModel(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(80), unique=True, nullable=False)
     data = db.Column(LargeBinary, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+
+# KORREKTUR: Die fehlende Klasse für die Geräte
+class Device(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    fcm_token = db.Column(db.String(255), unique=True, nullable=False)
+    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
 # --- Globale Variablen für geladene Artefakte ---
 current_settings = {}
@@ -51,32 +55,23 @@ btc_model, gold_model, btc_scaler, gold_scaler = None, None, None, None
 
 # --- Datenbank- & Helfer-Funktionen ---
 def load_artifacts_from_db():
-    """Lädt alle Modelle und Scaler aus der Datenbank in die globalen Variablen."""
     global btc_model, gold_model, btc_scaler, gold_scaler
     print("Versuche, Modelle und Scaler aus der DB zu laden...")
     try:
-        # Wichtig: Wir müssen im App-Kontext sein, um auf die DB zuzugreifen
         with app.app_context():
             artifacts = TrainedModel.query.all()
             if not artifacts:
-                print("WARNUNG: Keine Modelle in der DB gefunden. Bitte den Cron Job ausführen.")
+                print("WARNUNG: Keine Modelle in der DB gefunden.")
                 return
-
-            artifact_map = {}
-            for artifact in artifacts:
-                artifact_map[artifact.name] = pickle.loads(artifact.data)
-            
+            artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
             btc_model = artifact_map.get('btc_model')
             gold_model = artifact_map.get('gold_model')
             btc_scaler = artifact_map.get('btc_scaler')
             gold_scaler = artifact_map.get('gold_scaler')
-            
-            # Überprüfen, ob alle geladen wurden
             if all([btc_model, gold_model, btc_scaler, gold_scaler]):
                 print(f"Erfolgreich {len(artifacts)} Modelle/Scaler aus der DB geladen.")
             else:
                 print("WARNUNG: Einige Modelle/Scaler konnten nicht in der DB gefunden werden.")
-
     except Exception as e:
         print(f"FEHLER beim Laden der Artefakte aus der DB: {e}")
 
@@ -103,14 +98,13 @@ def get_scaled_live_features(ticker, scaler):
 with app.app_context():
     db.create_all()
     current_settings = load_settings_from_db()
-load_artifacts_from_db() # Lade die Modelle beim Start
+load_artifacts_from_db()
 
 # --- API-Routen ---
 @app.route('/')
 def home():
     return "Krypto Helfer Backend - Finale KI-Modelle sind live!"
 
-# ... (alle anderen Routen wie /get_signals, /save_settings etc. bleiben exakt wie in der letzten Version) ...
 @app.route('/get_signals')
 def get_signals():
     global current_settings
@@ -125,8 +119,8 @@ def get_signals():
                 tp = price * (1 + current_settings.get("bitcoin_tp_percentage", 2.5)/100)
                 sl = price * (1 - current_settings.get("bitcoin_sl_percentage", 1.5)/100)
                 bitcoin_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "; bitcoin_data={"signal_type":"Fehler"}
-        except Exception as e: error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"signal_type":"Fehler"}
+            else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
+        except Exception as e: error_msg += f"BTC Fehler: {e}. "
     else: error_msg += "BTC Modell/Scaler nicht geladen. "
     
     if gold_model and gold_scaler:
@@ -140,8 +134,8 @@ def get_signals():
                 tp = price * (1 + current_settings.get("xauusd_tp_percentage", 1.8)/100)
                 sl = price * (1 - current_settings.get("xauusd_sl_percentage", 0.8)/100)
                 gold_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "; gold_data={"signal_type":"Fehler"}
-        except Exception as e: error_msg += f"Gold Fehler: {e}. "; gold_data={"signal_type":"Fehler"}
+            else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
+        except Exception as e: error_msg += f"Gold Fehler: {e}. "
     else: error_msg += "Gold Modell/Scaler fehlt. "
 
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
@@ -154,15 +148,12 @@ def save_app_settings():
     if data: current_settings.update(data); save_settings(current_settings); return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
 
-# NEUER API-ENDPUNKT ZUM REGISTRIEREN VON GERÄTEN
 @app.route('/register_device', methods=['POST'])
 def register_device():
     data = request.get_json()
     token = data.get('token')
-
-    if not token:
-        return jsonify({"status": "error", "message": "Kein Token erhalten."}), 400
-
+    if not token: return jsonify({"status": "error", "message": "Kein Token erhalten."}), 400
+    
     with app.app_context():
         existing_device = Device.query.filter_by(fcm_token=token).first()
         if existing_device:
@@ -186,3 +177,7 @@ def send_test_notification():
         response = messaging.send(message)
         return jsonify({"status": "success", "response": str(response)})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
