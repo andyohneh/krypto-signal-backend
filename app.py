@@ -89,7 +89,7 @@ def get_scaled_live_features(ticker, scaler):
 
     features_for_scaling = featured_data[features_to_select]
     scaled_features = scaler.transform(features_for_scaling)
-    return scaled_features[-1].reshape(1, -1))
+    return scaled_features[-1].reshape(1, -1)
 
 with app.app_context():
     db.create_all()
