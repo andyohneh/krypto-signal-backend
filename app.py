@@ -15,13 +15,26 @@ from feature_engineer import add_features_to_data
 
 app = Flask(__name__)
 try:
+    cred = credentials.Certificate("serviceAccountKey.json")
+    print("Firebase-Credentials aus lokaler Datei geladen.")
+except FileNotFoundError:
+    print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable (für Render)...")
     cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
     if cred_str:
-        cred = credentials.Certificate(json.loads(cred_str))
-        firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK initialisiert.")
+        cred_json = json.loads(cred_str)
+        cred = credentials.Certificate(cred_json)
+    else:
+        cred = None
+        print("WARNUNG: Keine Firebase-Credentials gefunden.")
 except Exception as e:
-    print(f"FEHLER bei Firebase-Initialisierung: {e}")
+    cred = None
+    print(f"Fehler bei Firebase-Credential-Suche: {e}")
+
+if cred and not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+    print("Firebase Admin SDK initialisiert.")
+else:
+    print("Firebase Admin SDK NICHT initialisiert.")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
