@@ -36,6 +36,9 @@ class Settings(db.Model):
     xauusd_tp_percentage = db.Column(db.Float, default=1.8)
     xauusd_sl_percentage = db.Column(db.Float, default=0.8)
     update_interval_minutes = db.Column(db.Integer, default=15)
+    # NEU: Spalten für das Signal-Gedächtnis
+    last_btc_signal = db.Column(db.String(10), default='N/A')
+    last_gold_signal = db.Column(db.String(10), default='N/A')
 
 class TrainedModel(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -43,7 +46,6 @@ class TrainedModel(db.Model):
     data = db.Column(LargeBinary, nullable=False)
     timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
-# KORREKTUR: Die fehlende Klasse für die Geräte
 class Device(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     fcm_token = db.Column(db.String(255), unique=True, nullable=False)
@@ -83,7 +85,11 @@ def load_settings_from_db():
 
 def save_settings(new_settings):
     s = Settings.query.first()
-    if s: [setattr(s, k, v) for k, v in new_settings.items() if hasattr(s, k)]; db.session.commit()
+    if s:
+        for k, v in new_settings.items():
+            if hasattr(s, k):
+                setattr(s, k, v)
+        db.session.commit()
 
 def get_scaled_live_features(ticker, scaler):
     raw_data = download_historical_data(ticker, period="3mo", interval="1d")
@@ -122,7 +128,7 @@ def get_signals():
             else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
         except Exception as e: error_msg += f"BTC Fehler: {e}. "
     else: error_msg += "BTC Modell/Scaler nicht geladen. "
-    
+
     if gold_model and gold_scaler:
         try:
             FMP_API_KEY = os.environ.get('FMP_API_KEY')
@@ -141,7 +147,7 @@ def get_signals():
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
     return jsonify(response)
-    
+
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
     global current_settings; data = request.get_json()
