@@ -1,11 +1,10 @@
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-from data_manager import download_historical_data
 
 def add_features_to_data(data):
     if data is None or data.empty: return None
-    print("Erstelle neue Features (inkl. RSI, MACD & ATR)...")
+    print("Erstelle Features (SMA, RSI, MACD, ATR)...")
     if not all(col in data.columns for col in ['High', 'Low', 'Close', 'Adj Close']):
         print("FEHLER: Notwendige Spalten für Feature-Erstellung nicht gefunden.")
         return None
@@ -25,26 +24,11 @@ def add_features_to_data(data):
     data_with_features.dropna(inplace=True)
     return data_with_features
 
-# NEUE FUNKTION: Erstellt die Zielvariablen für die Regressions-Modelle
 def create_regression_targets(data, future_days=7):
-    """
-    Erstellt Spalten, die den zukünftigen höchsten und tiefsten Preis
-    innerhalb eines bestimmten Zeitfensters enthalten.
-    """
-    if data is None:
-        return None
-
+    if data is None: return None
     print(f"Erstelle Regressions-Ziele für die nächsten {future_days} Tage...")
-
     data_with_targets = data.copy()
-
-    # .rolling() erstellt ein gleitendes Fenster IN DIE ZUKUNFT (deshalb die seltsame Syntax)
-    # Wir müssen den Index umkehren, das Fenster anwenden, und es wieder zurückdrehen.
-    # .min() / .max() findet den niedrigsten/höchsten Wert in diesem zukünftigen Fenster.
     data_with_targets[f'future_{future_days}d_low'] = data_with_targets['Low'].iloc[::-1].rolling(window=future_days).min().iloc[::-1].shift(-future_days)
     data_with_targets[f'future_{future_days}d_high'] = data_with_targets['High'].iloc[::-1].rolling(window=future_days).max().iloc[::-1].shift(-future_days)
-
-    # Die letzten Zeilen, für die wir keine Zukunft kennen, entfernen wir
     data_with_targets.dropna(inplace=True)
-
     return data_with_targets

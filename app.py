@@ -1,43 +1,41 @@
 # app.py (Die finale, fehlerfreie Version)
 
-import os
-import json
-import requests
-import pickle
-import numpy as np
-import pandas as pd
-# KORREKTUR: 'request' wurde zum Import hinzugefügt
-from flask import Flask, jsonify, request 
+import os, json, pickle, requests, numpy as np, pandas as pd
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import LargeBinary, func
 import firebase_admin
 from firebase_admin import credentials, messaging
 from dotenv import load_dotenv
-
 load_dotenv()
 
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data
 from train_model import FEATURES_LIST
 
-# --- Initialisierung ---
 app = Flask(__name__)
 
+# --- FINALE, KORRIGIERTE FIREBASE-INITIALISIERUNG ---
+cred = None  # WICHTIG: Initialisiere cred hier als None
 if not firebase_admin._apps:
     try:
         cred = credentials.Certificate("serviceAccountKey.json")
+        print("Firebase-Credentials aus lokaler Datei geladen.")
     except FileNotFoundError:
+        print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable...")
         try:
             cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
             if cred_str:
                 cred = credentials.Certificate(json.loads(cred_str))
+                print("Firebase-Credentials aus Umgebungsvariable geladen.")
         except Exception as e:
-            cred = None; print(f"Fehler bei Firebase-Credentials: {e}")
-    if cred:
-        firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK initialisiert.")
-    else:
-        print("Firebase Admin SDK NICHT initialisiert.")
+            print(f"Fehler beim Parsen der Firebase-Credentials: {e}")
+
+if cred:
+    firebase_admin.initialize_app(cred)
+    print("Firebase Admin SDK initialisiert.")
+else:
+    print("Firebase Admin SDK NICHT initialisiert.")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
