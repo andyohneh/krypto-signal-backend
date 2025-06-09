@@ -18,7 +18,6 @@ import numpy as np
 # Importiere unsere sauberen Helfer-Funktionen und die Feature-Liste
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data, create_regression_targets
-# Importiere train_regression_model und FEATURES_LIST
 from train_model import train_regression_model, FEATURES_LIST
 
 # --- Setup ---
@@ -37,7 +36,6 @@ class Settings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     last_btc_signal = db.Column(db.String(100), default='N/A')
     last_gold_signal = db.Column(db.String(100), default='N/A')
-    # Hier werden die Scaler gespeichert, die von train_model.py kommen (StandardScaler)
     scaler_btc_low = db.Column(LargeBinary)
     model_btc_low = db.Column(LargeBinary)
     scaler_btc_high = db.Column(LargeBinary)
@@ -85,8 +83,10 @@ if not firebase_admin._apps:
 
     if cred:
         try:
-            firebase_admin.initialize_app(cred)
-            print("Firebase erfolgreich initialisiert.")
+            # WICHTIG: Füge 'projectId' explizit hinzu
+            # Ersetze 'krypto-helfer-app' durch deine tatsächliche Projekt-ID
+            firebase_admin.initialize_app(cred, {'projectId': 'krypto-helfer-app'})
+            print("Firebase erfolgreich initialisiert mit expliziter Projekt-ID.")
         except ValueError as e:
             print(f"Firebase bereits initialisiert oder Fehler: {e}")
         except Exception as e:
@@ -164,7 +164,6 @@ def run_training_pipeline():
         print("Phase 2: Feature Engineering und Target-Erstellung...")
         # feature_engineer.py gibt MinMaxScaler zurück, die wir hier nicht direkt speichern,
         # da train_model.py seine eigenen StandardScaler zurückgibt.
-        # Wir benötigen die Scaler aus feature_engineer.py nur, wenn wir Features ohne Training skalieren.
         btc_data_engineered, _, _ = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
         gold_data_engineered, _, _ = add_features_to_data(gold_df.copy(), asset_name="gold")
 
@@ -187,9 +186,8 @@ def run_training_pipeline():
 
         print("Phase 3: Modelltraining und Speicherung...")
 
-        # --- Hier speichern wir die Modelle UND Scaler, die von train_model.py zurückgegeben werden ---
         btc_model_low, btc_scaler_low_from_train = train_regression_model(btc_data_final_low, 'low_target')
-        if btc_model_low and btc_scaler_low_from_train: # Stelle sicher, dass das Training erfolgreich war
+        if btc_model_low and btc_scaler_low_from_train:
             settings.update_model('btc', 'low', btc_scaler_low_from_train, btc_model_low)
             print("BTC Low-Modell trainiert und gespeichert.")
         else:
@@ -215,10 +213,7 @@ def run_training_pipeline():
             print("GOLD High-Modell trainiert und gespeichert.")
         else:
             print("WARNUNG: GOLD High-Modell konnte nicht trainiert werden. Überspringe Speicherung.")
-        # --------------------------------------------------------------------------------------
 
-        # Aktualisiere den Zeitstempel nur, wenn Modelle erfolgreich trainiert und gespeichert wurden
-        # oder wenn zumindest ein Versuch unternommen wurde.
         if (btc_model_low or btc_model_high or gold_model_low or gold_model_high):
             settings.model_update_timestamp = func.now()
             db.session.commit()
@@ -233,16 +228,15 @@ def run_training_pipeline():
         if not device_tokens:
             print("Keine registrierten Geräte-Tokens gefunden. Keine Benachrichtigungen möglich.")
 
-        # --- KORREKTUR: Trennung von Asset-Key (DB) und Asset-Display-Name (Benutzer) ---
         btc_details = {
-            "asset_key": "btc", # Für Datenbank-Spalten (scaler_btc_low)
-            "asset_display_name": "Bitcoin", # Für Benachrichtigungen
+            "asset_key": "btc",
+            "asset_display_name": "Bitcoin",
             "current_price": btc_df['Close'].iloc[-1],
         }
 
         gold_details = {
-            "asset_key": "gold", # Für Datenbank-Spalten (scaler_gold_low)
-            "asset_display_name": "Gold", # Für Benachrichtigungen
+            "asset_key": "gold",
+            "asset_display_name": "Gold",
             "current_price": gold_df['Close'].iloc[-1],
         }
 
@@ -251,10 +245,8 @@ def run_training_pipeline():
             asset_display_name = details["asset_display_name"]
             current_price = details["current_price"]
             
-            # Lade die aktuellsten Modelle und Scaler aus der Datenbank
-            scaler_for_predict, model_for_predict = settings.get_model(asset_key, 'low') # Beispiel für low-Modell
-            # Um das High-Modell auch zu nutzen, müsstest du es ebenfalls laden
-            _, high_model_for_predict = settings.get_model(asset_key, 'high') # Lade High-Modell extra
+            scaler_for_predict, model_for_predict = settings.get_model(asset_key, 'low')
+            _, high_model_for_predict = settings.get_model(asset_key, 'high')
 
             if not all([scaler_for_predict, model_for_predict, high_model_for_predict]):
                 print(f"FEHLER: Modelle oder Scaler für {asset_display_name} konnten für Vorhersage nicht geladen werden. Überspringe Signalgenerierung.")
@@ -263,24 +255,18 @@ def run_training_pipeline():
             dummy_current_df = pd.DataFrame({
                 'Date': [pd.to_datetime('today')],
                 'Close': [current_price],
-                # Füge hier Dummy 'High' und 'Low' hinzu, damit add_features_to_data sie findet
                 'High': [current_price * (1 + np.random.uniform(0.001, 0.005))],
                 'Low': [current_price * (1 - np.random.uniform(0.001, 0.005))]
             })
             
-            # Features aus aktuellem Datenpunkt extrahieren (ohne Skalierung in feature_engineer)
-            # und dann mit dem GELADENEN SCALER skalieren.
             latest_features_df, _, _ = add_features_to_data(dummy_current_df, asset_display_name.lower(), skip_scaling=True)
             
-            # Sicherstellen, dass nur die Features in der richtigen Reihenfolge vorhanden sind
             X_predict = latest_features_df[FEATURES_LIST]
 
-            # Vorhersage
-            # Skaliere die Features für die Vorhersage mit dem GELADENEN SCALER!
             X_predict_scaled = scaler_for_predict.transform(X_predict)
             
             predicted_low = model_for_predict.predict(X_predict_scaled)[0]
-            predicted_high = high_model_for_predict.predict(X_predict_scaled)[0] # Vorhersage mit High-Modell
+            predicted_high = high_model_for_predict.predict(X_predict_scaled)[0]
             
             new_signal_text = f"Einstieg: {predicted_low:.2f}, TP: {predicted_high:.2f}"
             
@@ -288,7 +274,7 @@ def run_training_pipeline():
             print(f"Analyse für {asset_display_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal_text}'")
 
             if new_signal_text != last_signal or last_signal == 'N/A':
-                print(f"-> Signal für {asset_display_name} hat sich geändert! Sende Benachrichtigung...")
+                print(f"-> Signal für {asset_display_name} hat sich geändert! Sende Benachrichtigung...") # KORRIGIERT: asset_display_name
                 title = f"Neues Preis-Ziel: {asset_display_name}"
                 body = f"Neues Ziel: Einstieg ca. {predicted_low:.2f}, Take Profit ca. {predicted_high:.2f}"
                 send_notification(title, body, device_tokens)

@@ -11,10 +11,8 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 from dotenv import load_dotenv
 
-# Lade Umgebungsvariablen aus .env-Datei (lokal)
 load_dotenv()
 
-# Importiere deine lokalen Module
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data, create_regression_targets
 from train_model import FEATURES_LIST, train_regression_model
@@ -27,18 +25,14 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # --- Firebase-Initialisierung ---
-# Diese Initialisierung ist für den Web Service (app.py) relevant
-# Sie muss nur einmal erfolgen.
 if not firebase_admin._apps:
-    cred = None  # WICHTIG: cred hier initialisieren
+    cred = None
     try:
-        # Versuch 1: Lade aus lokaler Datei (für lokale Entwicklung)
         cred = credentials.Certificate("serviceAccountKey.json")
         print("Firebase-Credentials aus lokaler Datei geladen.")
     except FileNotFoundError:
         print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable...")
         try:
-            # Versuch 2: Lade aus Umgebungsvariable (für Render)
             cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
             if cred_str:
                 cred = credentials.Certificate(json.loads(cred_str))
@@ -54,10 +48,12 @@ if not firebase_admin._apps:
 
     if cred:
         try:
-            firebase_admin.initialize_app(cred)
-            print("Firebase erfolgreich initialisiert.")
+            # WICHTIG: Füge 'projectId' explizit hinzu
+            # Ersetze 'krypto-helfer-app' durch deine tatsächliche Projekt-ID
+            firebase_admin.initialize_app(cred, {'projectId': 'krypto-helfer-app'})
+            print("Firebase erfolgreich initialisiert mit expliziter Projekt-ID.")
         except ValueError as e:
-            print(f"Firebase bereits initialisiert oder Fehler: {e}") # Sollte hier nicht passieren, da wir prüfen
+            print(f"Firebase bereits initialisiert oder Fehler: {e}")
         except Exception as e:
             print(f"FEHLER bei der Firebase-Initialisierung: {e}")
     else:
@@ -71,8 +67,8 @@ class Device(db.Model):
 
 class Settings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    last_btc_signal = db.Column(db.String(100), default='N/A') # Erhöht auf 100
-    last_gold_signal = db.Column(db.String(100), default='N/A') # Erhöht auf 100
+    last_btc_signal = db.Column(db.String(100), default='N/A')
+    last_gold_signal = db.Column(db.String(100), default='N/A')
     scaler_btc_low = db.Column(LargeBinary)
     model_btc_low = db.Column(LargeBinary)
     scaler_btc_high = db.Column(LargeBinary)
@@ -98,24 +94,21 @@ class Settings(db.Model):
 
 with app.app_context():
     db.create_all()
-    # Sicherstellen, dass immer ein Einstellungs-Eintrag existiert
     if not Settings.query.first():
         db.session.add(Settings())
         db.session.commit()
         print("Initialer Settings-Eintrag erstellt.")
 
-# --- Hilfsfunktion für Benachrichtigungen ---
+# --- Hilfsfunktion für Benachrichtigungen (Konsistent mit run_training_pipeline.py) ---
 def send_notification(title, body, tokens):
     if not tokens:
         print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
         return
 
-    # Firebase-Initialisierung prüfen
     if not firebase_admin._apps:
         print("Firebase ist nicht initialisiert. Nachricht kann nicht gesendet werden.")
         return
 
-    # Sende Nachrichten in Batches, um API-Limits zu beachten
     message = messaging.MulticastMessage(
         notification=messaging.Notification(title=title, body=body),
         tokens=tokens,
@@ -167,7 +160,7 @@ def send_test_notification():
 
     title = "Test!"
     body = "Funktioniert! 🎉"
-    send_notification(title, body, [token]) # Nutze die neue send_notification Funktion
+    send_notification(title, body, [token]) # Nutze die konsistente send_notification Funktion
 
     return jsonify({"status": "success", "message": "Testnachricht gesendet (siehe Logs für Details)."})
 
