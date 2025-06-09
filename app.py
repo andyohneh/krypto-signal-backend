@@ -10,78 +10,118 @@ from sqlalchemy import LargeBinary, func
 import firebase_admin
 from firebase_admin import credentials, messaging
 
+# Importiere unsere Helfer-Funktionen
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data
+from train_model import FEATURES_LIST
 
+# --- Initialisierung ---
 app = Flask(__name__)
-try:
-    cred = credentials.Certificate("serviceAccountKey.json")
-    print("Firebase-Credentials aus lokaler Datei geladen.")
-except FileNotFoundError:
-    print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable (für Render)...")
-    cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
-    if cred_str:
-        cred_json = json.loads(cred_str)
-        cred = credentials.Certificate(cred_json)
-    else:
+
+# Robuste Firebase-Initialisierung
+if not firebase_admin._apps:
+    try:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        print("Firebase-Credentials aus lokaler Datei geladen.")
+    except FileNotFoundError:
+        print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable...")
+        try:
+            cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
+            if cred_str:
+                cred = credentials.Certificate(json.loads(cred_str))
+                print("Firebase-Credentials aus Umgebungsvariable geladen.")
+            else:
+                cred = None
+        except Exception as e:
+            cred = None
+            print(f"Fehler beim Parsen der Firebase-Credentials: {e}")
+    except Exception as e:
         cred = None
-        print("WARNUNG: Keine Firebase-Credentials gefunden.")
-except Exception as e:
-    cred = None
-    print(f"Fehler bei Firebase-Credential-Suche: {e}")
+        print(f"Anderer Fehler bei Firebase-Credential-Suche: {e}")
 
-if cred and not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
-    print("Firebase Admin SDK initialisiert.")
-else:
-    print("Firebase Admin SDK NICHT initialisiert.")
+    if cred:
+        firebase_admin.initialize_app(cred)
+        print("Firebase Admin SDK initialisiert.")
+    else:
+        print("Firebase Admin SDK NICHT initialisiert.")
 
+# Datenbank-Konfiguration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# --- DB-Modelle ---
+
+# --- Datenbank-Modelle ---
 class Settings(db.Model):
-    id=db.Column(db.Integer, primary_key=True); bitcoin_tp_percentage=db.Column(db.Float, default=2.5); bitcoin_sl_percentage=db.Column(db.Float, default=1.5); xauusd_tp_percentage=db.Column(db.Float, default=1.8); xauusd_sl_percentage=db.Column(db.Float, default=0.8); update_interval_minutes=db.Column(db.Integer, default=15); last_btc_signal=db.Column(db.String(10), default='N/A'); last_gold_signal=db.Column(db.String(10), default='N/A')
+    id=db.Column(db.Integer, primary_key=True)
+    bitcoin_tp_percentage=db.Column(db.Float, default=2.5); bitcoin_sl_percentage=db.Column(db.Float, default=1.5)
+    xauusd_tp_percentage=db.Column(db.Float, default=1.8); xauusd_sl_percentage=db.Column(db.Float, default=0.8)
+    update_interval_minutes=db.Column(db.Integer, default=15)
+    last_btc_signal=db.Column(db.String(10), default='N/A'); last_gold_signal=db.Column(db.String(10), default='N/A')
+
 class TrainedModel(db.Model):
-    id=db.Column(db.Integer, primary_key=True); name=db.Column(db.String(80), unique=True, nullable=False); data=db.Column(LargeBinary, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+    id=db.Column(db.Integer, primary_key=True); name=db.Column(db.String(80), unique=True, nullable=False)
+    data=db.Column(LargeBinary, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+
 class Device(db.Model):
-    id=db.Column(db.Integer, primary_key=True); fcm_token=db.Column(db.String(255), unique=True, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+    id=db.Column(db.Integer, primary_key=True); fcm_token=db.Column(db.String(255), unique=True, nullable=False)
+    timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
-# --- Globale Variablen & Helfer ---
-current_settings = {}; btc_model, gold_model, btc_scaler, gold_scaler = None, None, None, None
 
+# --- Globale Variablen für geladene Artefakte ---
+current_settings = {}
+btc_low_model, btc_high_model, btc_low_scaler, btc_high_scaler = None, None, None, None
+gold_low_model, gold_high_model, gold_low_scaler, gold_high_scaler = None, None, None, None
+
+
+# --- Datenbank- & Helfer-Funktionen ---
 def load_artifacts_from_db():
-    global btc_model, gold_model, btc_scaler, gold_scaler
+    global btc_low_model, btc_high_model, btc_low_scaler, btc_high_scaler, gold_low_model, gold_high_model, gold_low_scaler, gold_high_scaler
+    print("Versuche, Regressions-Modelle und Scaler aus der DB zu laden...")
     try:
         with app.app_context():
             artifacts = TrainedModel.query.all()
-            if not artifacts: print("WARNUNG: Keine Modelle in der DB gefunden."); return
+            if not artifacts:
+                print("WARNUNG: Keine Modelle in der DB gefunden."); return
+            
             artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
-            btc_model = artifact_map.get('btc_model'); gold_model = artifact_map.get('gold_model')
-            btc_scaler = artifact_map.get('btc_scaler'); gold_scaler = artifact_map.get('gold_scaler')
-            if all([btc_model, gold_model, btc_scaler, gold_scaler]): print(f"Erfolgreich {len(artifacts)} Modelle/Scaler geladen.")
-    except Exception as e: print(f"FEHLER beim Laden der Artefakte: {e}")
+            
+            btc_low_model = artifact_map.get('btc_low_model'); btc_high_model = artifact_map.get('btc_high_model')
+            btc_low_scaler = artifact_map.get('btc_low_scaler'); btc_high_scaler = artifact_map.get('btc_high_scaler')
+            gold_low_model = artifact_map.get('gold_low_model'); gold_high_model = artifact_map.get('gold_high_model')
+            gold_low_scaler = artifact_map.get('gold_low_scaler'); gold_high_scaler = artifact_map.get('gold_high_scaler')
+
+            if all([btc_low_model, btc_high_model, gold_low_model, gold_high_model]):
+                print(f"Erfolgreich {len(artifacts)} Regressions-Artefakte geladen.")
+            else:
+                print("WARNUNG: Einige Regressions-Modelle/Scaler konnten nicht gefunden werden.")
+    except Exception as e:
+        print(f"FEHLER beim Laden der Artefakte: {e}")
 
 def load_settings_from_db():
     settings = Settings.query.first()
-    if not settings: settings = Settings(); db.session.add(settings); db.session.commit()
+    if not settings:
+        settings = Settings(); db.session.add(settings); db.session.commit()
     return {c.name: getattr(settings, c.name) for c in settings.__table__.columns if c.name != 'id'}
 
 def save_settings(new_settings):
     s = Settings.query.first()
-    if s: [setattr(s, k, v) for k, v in new_settings.items() if hasattr(s, k)]; db.session.commit()
+    if s:
+        for k, v in new_settings.items():
+            if hasattr(s, k):
+                setattr(s, k, v)
+        db.session.commit()
 
-def get_scaled_live_features(ticker, scaler):
+def get_live_features_for_regression(ticker):
     raw_data = download_historical_data(ticker, period="3mo", interval="1d")
     if raw_data is None: return None
+    
     featured_data = add_features_to_data(raw_data)
-    if featured_data is None: return None
-    features_to_select = ['daily_return', 'SMA_10', 'SMA_50', 'sma_signal', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9', 'ATRr_14']
-    if not all(col in featured_data.columns for col in features_to_select): return None
-    features_for_scaling = featured_data[features_to_select]
-    scaled_features = scaler.transform(features_for_scaling)
-    return scaled_features[-1].reshape(1, -1)
+    if featured_data is None or not all(col in featured_data.columns for col in FEATURES_LIST):
+        return None
+        
+    return featured_data[FEATURES_LIST].iloc[-1]
+
 
 # --- App-Start ---
 with app.app_context():
@@ -89,15 +129,18 @@ with app.app_context():
     current_settings = load_settings_from_db()
 load_artifacts_from_db()
 
-@app.route('/')
-def home(): return "Krypto Helfer Backend - Finale KI-Modelle sind live!"
 
-# HINZUGEFÜGT: Der fehlende Endpunkt für die Chart-Daten
+# --- API-Routen ---
+@app.route('/')
+def home():
+    return "Krypto Helfer 2.0 - Regressions-Modelle sind live!"
+
 @app.route('/get_chart_data/<ticker_symbol>')
 def get_chart_data(ticker_symbol):
     try:
         raw_data = download_historical_data(ticker_symbol, period="6mo", interval="1d")
         if raw_data is None: return jsonify({"error": "Rohdaten laden fehlgeschlagen"}), 500
+        
         featured_data = add_features_to_data(raw_data)
         if featured_data is None: return jsonify({"error": "Feature-Erstellung fehlgeschlagen"}), 500
         
@@ -109,77 +152,52 @@ def get_chart_data(ticker_symbol):
         
         return jsonify(chart_data.to_dict(orient="records"))
     except Exception as e:
-        print(f"Fehler bei /get_chart_data: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/get_signals')
 def get_signals():
     global current_settings
-    bitcoin_data, gold_data, error_msg = {}, {}, ""
-
-    # --- Bitcoin ---
-    if btc_model and btc_scaler:
+    bitcoin_data, gold_data = {}, {}
+    error_msg = ""
+    # --- Bitcoin Preis-Vorhersage ---
+    if all([btc_low_model, btc_high_model, btc_low_scaler, btc_high_scaler]):
         try:
-            price = float(requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT").json()['price'])
-            features = get_scaled_live_features("BTC-USD", btc_scaler)
+            current_price = float(requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT").json()['price'])
+            latest_features = get_live_features_for_regression("BTC-USD")
+            if latest_features is not None:
+                live_features_low_scaled = btc_low_scaler.transform([latest_features])
+                live_features_high_scaled = btc_high_scaler.transform([latest_features])
+                predicted_low = btc_low_model.predict(live_features_low_scaled)[0]
+                predicted_high = btc_high_model.predict(live_features_high_scaled)[0]
+                atr_value = latest_features['ATRr_14']
+                stop_loss = predicted_low - (atr_value * 1.5)
+                bitcoin_data = {"price": round(current_price, 2), "entry": round(predicted_low, 2), "take_profit": round(predicted_high, 2), "stop_loss": round(stop_loss, 2), "signal_type": "Preis-Ziel"}
+            else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
+        except Exception as e: error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"signal_type":"Fehler"}
+    else: error_msg += "BTC Regressions-Modelle nicht geladen. "
 
-            if features is not None:
-                prediction = btc_model.predict(features)[0]
-                signal = "Kauf" if prediction == 1 else "Verkauf"
-
-                tp_perc = current_settings.get("bitcoin_tp_percentage", 2.5)
-                sl_perc = current_settings.get("bitcoin_sl_percentage", 1.5)
-
-                # --- KORRIGIERTE LOGIK ---
-                if signal == "Kauf":
-                    tp = price * (1 + tp_perc / 100)
-                    sl = price * (1 - sl_perc / 100)
-                else: # Verkauf
-                    tp = price * (1 - tp_perc / 100)
-                    sl = price * (1 + sl_perc / 100)
-
-                bitcoin_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else:
-                error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
-        except Exception as e:
-            error_msg += f"BTC Fehler: {e}. "
-    else:
-        error_msg += "BTC Modell/Scaler nicht geladen. "
-
-    # --- Gold ---
-    if gold_model and gold_scaler:
+    # --- Gold Preis-Vorhersage ---
+    if all([gold_low_model, gold_high_model, gold_low_scaler, gold_high_scaler]):
         try:
             FMP_API_KEY = os.environ.get('FMP_API_KEY')
-            price = float(requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}').json()[0]['price'])
-            features = get_scaled_live_features("GC=F", gold_scaler)
-
-            if features is not None:
-                prediction = gold_model.predict(features)[0]
-                signal = "Kauf" if prediction == 1 else "Verkauf"
-
-                tp_perc = current_settings.get("xauusd_tp_percentage", 1.8)
-                sl_perc = current_settings.get("xauusd_sl_percentage", 0.8)
-
-                # --- KORRIGIERTE LOGIK ---
-                if signal == "Kauf":
-                    tp = price * (1 + tp_perc / 100)
-                    sl = price * (1 - sl_perc / 100)
-                else: # Verkauf
-                    tp = price * (1 - tp_perc / 100)
-                    sl = price * (1 + sl_perc / 100)
-
-                gold_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else:
-                error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
-        except Exception as e:
-            error_msg += f"Gold Fehler: {e}. "
-    else:
-        error_msg += "Gold Modell/Scaler fehlt. "
+            current_price = float(requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}').json()[0]['price'])
+            latest_features = get_live_features_for_regression("GC=F")
+            if latest_features is not None:
+                live_features_low_scaled = gold_low_scaler.transform([latest_features])
+                live_features_high_scaled = gold_high_scaler.transform([latest_features])
+                predicted_low = gold_low_model.predict(live_features_low_scaled)[0]
+                predicted_high = gold_high_model.predict(live_features_high_scaled)[0]
+                atr_value = latest_features['ATRr_14']
+                stop_loss = predicted_low - (atr_value * 1.5)
+                gold_data = {"price": round(current_price, 2), "entry": round(predicted_low, 2), "take_profit": round(predicted_high, 2), "stop_loss": round(stop_loss, 2), "signal_type": "Preis-Ziel"}
+            else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
+        except Exception as e: error_msg += f"Gold Fehler: {e}. "
+    else: error_msg += "Gold Regressions-Modelle nicht geladen. "
 
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
     return jsonify(response)
-
+    
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
     global current_settings; data = request.get_json()
@@ -194,11 +212,9 @@ def register_device():
         existing_device = Device.query.filter_by(fcm_token=token).first()
         if existing_device:
             existing_device.timestamp = func.now(); db.session.commit()
-            print(f"Geräte-Token {token[:15]}... bereits vorhanden, Zeitstempel aktualisiert.")
             return jsonify({"status": "success", "message": "Gerät bereits registriert."})
         else:
             new_device = Device(fcm_token=token); db.session.add(new_device); db.session.commit()
-            print(f"Neues Gerät mit Token {token[:15]}... registriert.")
             return jsonify({"status": "success", "message": "Gerät erfolgreich registriert."})
 
 @app.route('/send_test_notification', methods=['POST'])
