@@ -18,7 +18,7 @@ import numpy as np
 # Importiere unsere sauberen Helfer-Funktionen und die Feature-Liste
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data, create_regression_targets
-from train_model import train_regression_model, FEATURES_LIST
+from train_model import train_regression_model, FEATURES_LIST # Stelle sicher, dass FEATURES_LIST hier importiert wird
 
 # --- Setup ---
 app = Flask(__name__) # Flask-App für SQLAlchemy-Kontext
@@ -180,13 +180,13 @@ def run_training_pipeline():
         # und die Dropna-Funktion damit arbeiten kann. Normalerweise würden diese Zeilen
         # in der create_regression_targets Funktion selbst gehandhabt werden.
         # Aber da wir hier nur die subset von dropna prüfen, sollte es passen.
-        all_btc_cols = FEATURES_LIST + ['low_target']
-        all_gold_cols = FEATURES_LIST + ['high_target'] # Für high_target Prüfung
+        all_features_and_low_target = FEATURES_LIST + ['low_target']
+        all_features_and_high_target = FEATURES_LIST + ['high_target']
 
-        btc_data_final_low.dropna(subset=all_btc_cols, inplace=True)
-        btc_data_final_high.dropna(subset=FEATURES_LIST + ['high_target'], inplace=True)
-        gold_data_final_low.dropna(subset=all_btc_cols, inplace=True) # hier auch low_target
-        gold_data_final_high.dropna(subset=FEATURES_LIST + ['high_target'], inplace=True)
+        btc_data_final_low.dropna(subset=all_features_and_low_target, inplace=True)
+        btc_data_final_high.dropna(subset=all_features_and_high_target, inplace=True)
+        gold_data_final_low.dropna(subset=all_features_and_low_target, inplace=True)
+        gold_data_final_high.dropna(subset=all_features_and_high_target, inplace=True)
 
 
         if btc_data_final_low.empty or btc_data_final_high.empty or gold_data_final_low.empty or gold_data_final_high.empty:
@@ -196,6 +196,7 @@ def run_training_pipeline():
         print("Phase 3: Modelltraining und Speicherung...")
 
         # --- KORREKTUR: ÜBERGIB DAS GESAMTE DATAFRAME UND DEN STRING-NAMEN DES ZIELS ---
+        # train_regression_model wird intern die Features und das Target auswählen
         btc_model_low = train_regression_model(btc_data_final_low, 'low_target') # Ganzer DF
         settings.update_model('btc', 'low', btc_scaler_low, btc_model_low)
         print("BTC Low-Modell trainiert und gespeichert.")
