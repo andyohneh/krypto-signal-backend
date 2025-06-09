@@ -3,8 +3,10 @@
 import os
 import json
 import pickle
-import requests # Wichtig für den Aufruf des Deploy Hooks
+import requests
 from dotenv import load_dotenv
+
+# Lade die .env-Datei für die lokale Entwicklung
 load_dotenv()
 
 from flask import Flask
@@ -13,44 +15,69 @@ from sqlalchemy import LargeBinary, func
 import firebase_admin
 from firebase_admin import credentials, messaging
 
+# Importiere unsere sauberen Helfer-Funktionen
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data
-from train_model import train_and_evaluate_model
+from train_model import train_and_evaluate_model, FEATURES_LIST # Importiere auch die Feature-Liste
 
-# --- Setup ---
+# --- Setup für Datenbank und Firebase ---
 app = Flask(__name__)
 try:
+    # Für lokale Ausführung
     cred = credentials.Certificate("serviceAccountKey.json")
+except Exception:
+    # Für Render, wo wir den JSON-String als Umgebungsvariable haben
+    try:
+        cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
+        cred_json = json.loads(cred_str)
+        cred = credentials.Certificate(cred_json)
+    except Exception as e:
+        print(f"Konnte Firebase-Credentials weder aus Datei noch aus Umgebungsvariable laden: {e}")
+        cred = None
+
+if cred and not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
     print("Firebase Admin SDK initialisiert.")
-except Exception as e:
-    print(f"FEHLER bei Firebase-Initialisierung: {e}")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# --- DB-Modelle ---
+# --- Datenbank-Modelle ---
 class Settings(db.Model):
-    id = db.Column(db.Integer, primary_key=True); last_btc_signal = db.Column(db.String(10), default='N/A'); last_gold_signal = db.Column(db.String(10), default='N/A')
+    id = db.Column(db.Integer, primary_key=True)
+    last_btc_signal = db.Column(db.String(10), default='N/A')
+    last_gold_signal = db.Column(db.String(10), default='N/A')
+    bitcoin_tp_percentage = db.Column(db.Float, default=2.5); bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
+    xauusd_tp_percentage = db.Column(db.Float, default=1.8); xauusd_sl_percentage = db.Column(db.Float, default=0.8)
+    update_interval_minutes = db.Column(db.Integer, default=15)
+
 class TrainedModel(db.Model):
-    id = db.Column(db.Integer, primary_key=True); name = db.Column(db.String(80), unique=True, nullable=False); data = db.Column(LargeBinary, nullable=False)
+    id = db.Column(db.Integer, primary_key=True); name = db.Column(db.String(80), unique=True, nullable=False)
+    data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+
 class Device(db.Model):
     id = db.Column(db.Integer, primary_key=True); fcm_token = db.Column(db.String(255), unique=True, nullable=False)
+    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
 def save_artifact_to_db(name, artifact):
     print(f"Speichere '{name}' in der Datenbank...")
-    with app.app_context():
-        existing_artifact = TrainedModel.query.filter_by(name=name).first()
-        if existing_artifact: existing_artifact.data = pickle.dumps(artifact)
-        else: db.session.add(TrainedModel(name=name, data=pickle.dumps(artifact)))
-        db.session.commit()
+    pickled_artifact = pickle.dumps(artifact)
+    existing_artifact = TrainedModel.query.filter_by(name=name).first()
+    if existing_artifact:
+        existing_artifact.data = pickled_artifact
+        print(f"'{name}' in der DB aktualisiert.")
+    else:
+        new_artifact = TrainedModel(name=name, data=pickled_artifact)
+        db.session.add(new_artifact)
+        print(f"'{name}' neu in der DB erstellt.")
+    db.session.commit()
 
 def send_notification(title, body, tokens):
     try:
         message = messaging.MulticastMessage(notification=messaging.Notification(title=title, body=body), tokens=tokens)
-        messaging.send_multicast(message)
-        print("Benachrichtigungen erfolgreich versendet.")
+        response = messaging.send_multicast(message)
+        print(f'{response.success_count} Nachrichten erfolgreich gesendet.')
     except Exception as e:
         print(f"Fehler beim Senden der Benachrichtigung: {e}")
 
@@ -61,10 +88,10 @@ def trigger_web_service_redeploy():
         print("Deploy Hook URL nicht gefunden. Überspringe automatischen Neustart.")
         return
     try:
-        print("Rufe Deploy Hook auf...")
-        response = requests.get(hook_url, timeout=20)
+        print("Rufe Deploy Hook auf, um den Web Service neu zu starten...")
+        response = requests.get(hook_url, timeout=30)
         if 200 <= response.status_code < 300:
-            print("Redeployment erfolgreich ausgelöst!")
+            print("Redeployment des Web Service erfolgreich ausgelöst!")
         else:
             print(f"Fehler beim Auslösen des Deploy Hooks: Status {response.status_code}")
     except Exception as e:
@@ -74,38 +101,60 @@ def run_full_pipeline():
     print("Starte die vollständige Trainings- und Benachrichtigungs-Pipeline...")
     with app.app_context():
         db.create_all()
-
-        # Phase 1 & 2
-        print("\n--- Phase 1&2: Datenaufbereitung & Training ---")
+        
         asset_map = {
             "BTC": {"ticker": "BTC-USD", "model_name": "btc_model", "scaler_name": "btc_scaler", "last_signal_key": "last_btc_signal"},
             "Gold": {"ticker": "GC=F", "model_name": "gold_model", "scaler_name": "gold_scaler", "last_signal_key": "last_gold_signal"}
         }
-        trained_artifacts = {}
+
+        print("\n--- Phase 1&2: Datenaufbereitung & Training ---")
         for asset_name, details in asset_map.items():
-            featured_data = add_features_to_data(download_historical_data(details["ticker"]))
+            print(f"\n--- Verarbeite {asset_name} ---")
+            raw_data = download_historical_data(details["ticker"])
+            featured_data = add_features_to_data(raw_data)
             if featured_data is not None:
                 model, scaler, _ = train_and_evaluate_model(featured_data)
                 if model and scaler:
                     save_artifact_to_db(details["model_name"], model)
                     save_artifact_to_db(details["scaler_name"], scaler)
-                    trained_artifacts[asset_name] = {"model": model, "scaler": scaler}
-
-        # Phase 3
+        
         print("\n--- Phase 3: Vorhersage & Benachrichtigung ---")
         settings = Settings.query.first()
         if not settings: settings = Settings(); db.session.add(settings); db.session.commit()
         device_tokens = [device.fcm_token for device in Device.query.all()]
+        if not device_tokens: print("Keine registrierten Geräte gefunden. Überspringe Benachrichtigungen.")
 
+        artifacts = TrainedModel.query.all()
+        artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
+        
         for asset_name, details in asset_map.items():
-            if asset_name not in trained_artifacts: continue
-            # ... (Logik zur Vorhersage und Benachrichtigung wie vorher)
+            model = artifact_map.get(details["model_name"])
+            scaler = artifact_map.get(details["scaler_name"])
+            if not model or not scaler:
+                print(f"Modell/Scaler für {asset_name} nicht geladen. Überspringe Vorhersage.")
+                continue
+            
+            live_featured_data = add_features_to_data(download_historical_data(details["ticker"]))
+            if live_featured_data is None: continue
+            
+            if not all(col in live_featured_data.columns for col in FEATURES_LIST):
+                print(f"FEHLER: Nicht alle Feature-Spalten in den Live-Daten für {asset_name} gefunden."); continue
+
+            features_for_scaling = live_featured_data[FEATURES_LIST]
+            scaled_features = scaler.transform(features_for_scaling)
+            latest_features = scaled_features[-1].reshape(1, -1)
+            prediction = model.predict(latest_features)[0]
+            new_signal = "Kauf" if prediction == 1 else "Verkauf"
             last_signal = getattr(settings, details["last_signal_key"])
-            new_signal = "Kauf" # Platzhalter, ersetze durch echte Vorhersage
+            print(f"Analyse für {asset_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal}'")
             if new_signal != last_signal and device_tokens:
-                # ... (sende Benachrichtigung)
+                print(f"-> Signal für {asset_name} hat sich geändert! Sende Benachrichtigung...")
+                title = f"Neues Signal: {asset_name}"; body = f"Das Handelssignal für {asset_name} ist jetzt: {new_signal.upper()}"
+                send_notification(title, body, device_tokens)
                 setattr(settings, details["last_signal_key"], new_signal)
                 db.session.commit()
+            else:
+                print(f"-> Signal für {asset_name} unverändert.")
 
     # Phase 4
     trigger_web_service_redeploy()
