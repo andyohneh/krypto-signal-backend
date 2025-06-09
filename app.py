@@ -72,18 +72,24 @@ def save_settings(new_settings):
 def get_scaled_live_features(ticker, scaler):
     raw_data = download_historical_data(ticker, period="3mo", interval="1d")
     if raw_data is None: return None
+    
     featured_data = add_features_to_data(raw_data)
     if featured_data is None: return None
+
+    # Die Liste der Features, die das Modell kennt
     features_to_select = [
         'daily_return', 'SMA_10', 'SMA_50', 'sma_signal', 'RSI_14',
         'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
         'ATRr_14'
     ]
+    
     if not all(col in featured_data.columns for col in features_to_select):
-        print(f"FEHLER: Nicht alle Feature-Spalten in den Daten für {ticker} gefunden."); return None
+        print(f"FEHLER: Nicht alle Feature-Spalten in den Daten für {ticker} gefunden.")
+        return None
+
     features_for_scaling = featured_data[features_to_select]
     scaled_features = scaler.transform(features_for_scaling)
-    return scaled_features[-1].reshape(1, -1)
+    return scaled_features[-1].reshape(1, -1))
 
 with app.app_context():
     db.create_all()
