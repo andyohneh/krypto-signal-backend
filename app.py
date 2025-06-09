@@ -101,6 +101,47 @@ with app.app_context():
 load_artifacts_from_db()
 
 # --- API-Routen ---
+
+# NEUER API-ENDPUNKT: Liefert historische Daten für die Charts
+@app.route('/get_chart_data/<ticker_symbol>')
+def get_chart_data(ticker_symbol):
+    print(f"Anfrage für Chart-Daten für {ticker_symbol} erhalten.")
+    try:
+        # Lade die rohen Daten der letzten 6 Monate
+        raw_data = download_historical_data(ticker_symbol, period="6mo", interval="1d")
+        if raw_data is None:
+            return jsonify({"error": "Konnte keine Rohdaten laden."}), 404
+
+        # Füge Features hinzu
+        featured_data = add_features_to_data(raw_data)
+        if featured_data is None:
+            return jsonify({"error": "Konnte Features nicht erstellen."}), 500
+
+        # Wähle nur die Spalten aus, die wir für den Chart brauchen
+        chart_data = featured_data[['Adj Close', 'SMA_10', 'SMA_50', 'RSI_14']].copy()
+
+        # Benenne die Spalten um, damit die App sie leicht versteht
+        chart_data.rename(columns={
+            'Adj Close': 'price',
+            'SMA_10': 'sma_short',
+            'SMA_50': 'sma_long',
+            'RSI_14': 'rsi'
+        }, inplace=True)
+
+        # Konvertiere das Datum vom Index in eine Spalte
+        chart_data.reset_index(inplace=True)
+        # Konvertiere das Datum in einen einfachen String-Format
+        chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
+
+        # Konvertiere den DataFrame in eine JSON-Liste
+        result = chart_data.to_json(orient="records")
+        # Wir parsen es zurück zu einem Python-Objekt, damit jsonify es korrekt behandelt
+        return jsonify(json.loads(result))
+
+    except Exception as e:
+        print(f"Fehler beim Erstellen der Chart-Daten: {e}")
+        return jsonify({"error": str(e)}), 500
+    
 @app.route('/')
 def home():
     return "Krypto Helfer Backend - Finale KI-Modelle sind live!"
