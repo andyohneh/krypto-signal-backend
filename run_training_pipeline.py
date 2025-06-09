@@ -304,4 +304,4 @@ def run_training_pipeline():
     print("Trainings-Pipeline abgeschlossen.")
 
 if __name__ == '__main__':
-    run_training_pipeline()
+    app.run(debug=True, host='0.0.0.0', port=os.getenv("PORT", 5000))
