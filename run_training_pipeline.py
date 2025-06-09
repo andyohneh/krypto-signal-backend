@@ -1,45 +1,44 @@
-# run_training_pipeline.py (Temporärer DEBUG-Code)
+# run_training_pipeline.py (Temporärer DEBUG-CODE V2 - Initialisierungstest)
 import sys
 import os
-print("--- Test 1: Skript-Start ---")
-print(f"Python Version: {sys.version}")
-print("Skript wird ausgeführt. Python-Interpreter funktioniert.")
+from dotenv import load_dotenv
+load_dotenv()
+print("--- Test 1: Skript-Start & .env geladen ---")
 
 try:
-    print("\n--- Test 2: Importiere einfache Bibliotheken ---")
-    import json
-    import pickle
-    import requests
-    from dotenv import load_dotenv
-    print("Einfache Bibliotheken erfolgreich importiert.")
-except Exception as e:
-    print(f"FEHLER bei einfachen Imports: {e}")
-
-try:
-    print("\n--- Test 3: Importiere komplexe Daten-Bibliotheken ---")
-    import pandas as pd
-    import numpy as np
-    from sklearn.ensemble import RandomForestClassifier
-    print("Daten-Bibliotheken (pandas, numpy, sklearn) erfolgreich importiert.")
-except Exception as e:
-    print(f"FEHLER beim Import der Daten-Bibliotheken: {e}")
-
-try:
-    print("\n--- Test 4: Importiere komplexe Cloud-Bibliotheken ---")
+    print("\n--- Test 2: Initialisiere Flask App ---")
     from flask import Flask
-    from flask_sqlalchemy import SQLAlchemy
-    import firebase_admin
-    print("Cloud-Bibliotheken (Flask, SQLAlchemy, Firebase) erfolgreich importiert.")
+    app = Flask(__name__)
+    print("    [ERFOLG] Flask App initialisiert.")
 except Exception as e:
-    print(f"FEHLER beim Import der Cloud-Bibliotheken: {e}")
+    print(f"    [FEHLER] bei Flask-Initialisierung: {e}")
+    sys.exit(1) # Beenden, wenn schon das fehlschlägt
 
 try:
-    print("\n--- Test 5: Importiere unsere Helfer-Skripte ---")
-    from data_manager import download_historical_data
-    from feature_engineer import add_features_to_data
-    from train_model import train_and_evaluate_model, FEATURES_LIST
-    print("Helfer-Skripte erfolgreich importiert.")
+    print("\n--- Test 3: Initialisiere Firebase Admin ---")
+    import firebase_admin
+    from firebase_admin import credentials
+    # Prüfen, ob die App schon initialisiert ist, um Fehler zu vermeiden
+    if not firebase_admin._apps:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    print("    [ERFOLG] Firebase Admin initialisiert.")
 except Exception as e:
-    print(f"FEHLER beim Import der Helfer-Skripte: {e}")
+    print(f"    [FEHLER] bei Firebase-Initialisierung: {e}")
+    sys.exit(1)
 
-print("\n\nDebug-Skript erfolgreich bis zum Ende durchgelaufen!")
+try:
+    print("\n--- Test 4: Initialisiere SQLAlchemy DB ---")
+    from flask_sqlalchemy import SQLAlchemy
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        raise ValueError("DATABASE_URL nicht in der Umgebung gefunden!")
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db = SQLAlchemy(app)
+    print("    [ERFOLG] SQLAlchemy DB initialisiert.")
+except Exception as e:
+    print(f"    [FEHLER] bei SQLAlchemy-Initialisierung: {e}")
+    sys.exit(1)
+
+print("\n\nDebug-Skript (Initialisierung) erfolgreich bis zum Ende durchgelaufen!")
