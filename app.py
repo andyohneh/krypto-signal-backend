@@ -27,26 +27,19 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+# --- DB-Modelle ---
 class Settings(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    bitcoin_tp_percentage = db.Column(db.Float, default=2.5); bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
-    xauusd_tp_percentage = db.Column(db.Float, default=1.8); xauusd_sl_percentage = db.Column(db.Float, default=0.8)
-    update_interval_minutes = db.Column(db.Integer, default=15)
-    last_btc_signal = db.Column(db.String(10), default='N/A'); last_gold_signal = db.Column(db.String(10), default='N/A')
-
+    id=db.Column(db.Integer, primary_key=True); bitcoin_tp_percentage=db.Column(db.Float, default=2.5); bitcoin_sl_percentage=db.Column(db.Float, default=1.5); xauusd_tp_percentage=db.Column(db.Float, default=1.8); xauusd_sl_percentage=db.Column(db.Float, default=0.8); update_interval_minutes=db.Column(db.Integer, default=15); last_btc_signal=db.Column(db.String(10), default='N/A'); last_gold_signal=db.Column(db.String(10), default='N/A')
 class TrainedModel(db.Model):
-    id = db.Column(db.Integer, primary_key=True); name = db.Column(db.String(80), unique=True, nullable=False)
-    data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
-
+    id=db.Column(db.Integer, primary_key=True); name=db.Column(db.String(80), unique=True, nullable=False); data=db.Column(LargeBinary, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 class Device(db.Model):
-    id = db.Column(db.Integer, primary_key=True); fcm_token = db.Column(db.String(255), unique=True, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+    id=db.Column(db.Integer, primary_key=True); fcm_token=db.Column(db.String(255), unique=True, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
+# --- Globale Variablen & Helfer ---
 current_settings = {}; btc_model, gold_model, btc_scaler, gold_scaler = None, None, None, None
 
 def load_artifacts_from_db():
     global btc_model, gold_model, btc_scaler, gold_scaler
-    print("Versuche, Modelle und Scaler aus der DB zu laden...")
     try:
         with app.app_context():
             artifacts = TrainedModel.query.all()
@@ -54,15 +47,12 @@ def load_artifacts_from_db():
             artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
             btc_model = artifact_map.get('btc_model'); gold_model = artifact_map.get('gold_model')
             btc_scaler = artifact_map.get('btc_scaler'); gold_scaler = artifact_map.get('gold_scaler')
-            if all([btc_model, gold_model, btc_scaler, gold_scaler]):
-                print(f"Erfolgreich {len(artifacts)} Modelle/Scaler aus der DB geladen.")
-            else: print("WARNUNG: Einige Modelle/Scaler konnten nicht in der DB gefunden werden.")
-    except Exception as e: print(f"FEHLER beim Laden der Artefakte aus der DB: {e}")
+            if all([btc_model, gold_model, btc_scaler, gold_scaler]): print(f"Erfolgreich {len(artifacts)} Modelle/Scaler geladen.")
+    except Exception as e: print(f"FEHLER beim Laden der Artefakte: {e}")
 
 def load_settings_from_db():
     settings = Settings.query.first()
-    if not settings:
-        settings = Settings(); db.session.add(settings); db.session.commit()
+    if not settings: settings = Settings(); db.session.add(settings); db.session.commit()
     return {c.name: getattr(settings, c.name) for c in settings.__table__.columns if c.name != 'id'}
 
 def save_settings(new_settings):
@@ -72,25 +62,15 @@ def save_settings(new_settings):
 def get_scaled_live_features(ticker, scaler):
     raw_data = download_historical_data(ticker, period="3mo", interval="1d")
     if raw_data is None: return None
-    
     featured_data = add_features_to_data(raw_data)
     if featured_data is None: return None
-
-    # Die Liste der Features, die das Modell kennt
-    features_to_select = [
-        'daily_return', 'SMA_10', 'SMA_50', 'sma_signal', 'RSI_14',
-        'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
-        'ATRr_14'
-    ]
-    
-    if not all(col in featured_data.columns for col in features_to_select):
-        print(f"FEHLER: Nicht alle Feature-Spalten in den Daten für {ticker} gefunden.")
-        return None
-
+    features_to_select = ['daily_return', 'SMA_10', 'SMA_50', 'sma_signal', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9', 'ATRr_14']
+    if not all(col in featured_data.columns for col in features_to_select): return None
     features_for_scaling = featured_data[features_to_select]
     scaled_features = scaler.transform(features_for_scaling)
     return scaled_features[-1].reshape(1, -1)
 
+# --- App-Start ---
 with app.app_context():
     db.create_all()
     current_settings = load_settings_from_db()
@@ -98,6 +78,26 @@ load_artifacts_from_db()
 
 @app.route('/')
 def home(): return "Krypto Helfer Backend - Finale KI-Modelle sind live!"
+
+# HINZUGEFÜGT: Der fehlende Endpunkt für die Chart-Daten
+@app.route('/get_chart_data/<ticker_symbol>')
+def get_chart_data(ticker_symbol):
+    try:
+        raw_data = download_historical_data(ticker_symbol, period="6mo", interval="1d")
+        if raw_data is None: return jsonify({"error": "Rohdaten laden fehlgeschlagen"}), 500
+        featured_data = add_features_to_data(raw_data)
+        if featured_data is None: return jsonify({"error": "Feature-Erstellung fehlgeschlagen"}), 500
+        
+        chart_columns = ['Adj Close', 'SMA_10', 'SMA_50', 'RSI_14']
+        chart_data = featured_data[chart_columns].copy()
+        chart_data.rename(columns={'Adj Close': 'price', 'SMA_10': 'sma_short', 'SMA_50': 'sma_long', 'RSI_14': 'rsi'}, inplace=True)
+        chart_data.reset_index(inplace=True)
+        chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
+        
+        return jsonify(chart_data.to_dict(orient="records"))
+    except Exception as e:
+        print(f"Fehler bei /get_chart_data: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/get_signals')
 def get_signals():
@@ -116,7 +116,6 @@ def get_signals():
             else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
         except Exception as e: error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"signal_type":"Fehler", "price":"Fehler"}
     else: error_msg += "BTC Modell/Scaler nicht geladen. "
-
     if gold_model and gold_scaler:
         try:
             FMP_API_KEY = os.environ.get('FMP_API_KEY')
@@ -131,7 +130,6 @@ def get_signals():
             else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
         except Exception as e: error_msg += f"Gold Fehler: {e}. "; gold_data={"signal_type":"Fehler", "price":"Fehler"}
     else: error_msg += "Gold Modell/Scaler fehlt. "
-
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
     return jsonify(response)
