@@ -12,21 +12,26 @@ def add_features_to_data(data):
     if data is None or data.empty:
         return None
 
-    print("Erstelle neue Features (inkl. RSI) auf Basis von 'Adj Close'...")
-
+    print("Erstelle neue Features (inkl. RSI & MACD)...")
     price_series = data['Adj Close']
-
     if price_series.empty:
-        print("FEHLER: 'Adj Close'-Spalte ist leer oder nicht vorhanden.")
         return None
 
     data_with_features = data.copy()
 
+    # Bisherige Features
     data_with_features['daily_return'] = price_series.pct_change()
     data_with_features[f'SMA_{SHORT_SMA_WINDOW}'] = price_series.rolling(window=SHORT_SMA_WINDOW).mean()
     data_with_features[f'SMA_{LONG_SMA_WINDOW}'] = price_series.rolling(window=LONG_SMA_WINDOW).mean()
     data_with_features['sma_signal'] = np.where(data_with_features[f'SMA_{SHORT_SMA_WINDOW}'] > data_with_features[f'SMA_{LONG_SMA_WINDOW}'], 1, 0)
     data_with_features['RSI_14'] = ta.rsi(price_series, length=14)
+
+    # NEUES FEATURE: MACD
+    # pandas-ta ist so praktisch, dass es uns den MACD, das Histogramm (MACDh)
+    # und die Signallinie (MACDs) in einem Schritt berechnet.
+    macd = ta.macd(price_series, fast=12, slow=26, signal=9)
+    # Wir fügen die drei neuen Spalten zu unserem DataFrame hinzu
+    data_with_features = pd.concat([data_with_features, macd], axis=1)
 
     data_with_features.dropna(inplace=True)
     return data_with_features

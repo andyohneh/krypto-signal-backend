@@ -47,9 +47,20 @@ def train_model_for_asset(input_filename, model_name, scaler_name):
     data = pd.read_csv(input_filename, index_col=0, parse_dates=True)
     data['target'] = np.where(data['Close'].shift(-1) > data['Close'], 1, 0)
     data.dropna(inplace=True)
-    features = ['daily_return', 'SMA_10', 'SMA_50', 'sma_signal', 'RSI_14']
-    X = data[features]
-    y = data['target']
+    # 2. Features und Ziel trennen
+# KORREKTUR: Wir fügen die neuen MACD-Spalten zur Liste der Features hinzu!
+features = [
+    'daily_return', 
+    'SMA_10', 
+    'SMA_50', 
+    'sma_signal', 
+    'RSI_14',
+    'MACD_12_26_9', # NEU
+    'MACDh_12_26_9', # NEU
+    'MACDs_12_26_9'  # NEU
+]
+X = data[features]
+y = data['target']
     split_index = int(len(X) * 0.8)
     X_train, X_test = X[:split_index], X[split_index:]
     y_train, y_test = y[:split_index], y[split_index:]
