@@ -103,33 +103,66 @@ def get_chart_data(ticker_symbol):
 def get_signals():
     global current_settings
     bitcoin_data, gold_data, error_msg = {}, {}, ""
+
+    # --- Bitcoin ---
     if btc_model and btc_scaler:
         try:
             price = float(requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT").json()['price'])
             features = get_scaled_live_features("BTC-USD", btc_scaler)
+
             if features is not None:
                 prediction = btc_model.predict(features)[0]
                 signal = "Kauf" if prediction == 1 else "Verkauf"
-                tp = price * (1 + current_settings.get("bitcoin_tp_percentage", 2.5)/100)
-                sl = price * (1 - current_settings.get("bitcoin_sl_percentage", 1.5)/100)
+
+                tp_perc = current_settings.get("bitcoin_tp_percentage", 2.5)
+                sl_perc = current_settings.get("bitcoin_sl_percentage", 1.5)
+
+                # --- KORRIGIERTE LOGIK ---
+                if signal == "Kauf":
+                    tp = price * (1 + tp_perc / 100)
+                    sl = price * (1 - sl_perc / 100)
+                else: # Verkauf
+                    tp = price * (1 - tp_perc / 100)
+                    sl = price * (1 + sl_perc / 100)
+
                 bitcoin_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
-        except Exception as e: error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"signal_type":"Fehler", "price":"Fehler"}
-    else: error_msg += "BTC Modell/Scaler nicht geladen. "
+            else:
+                error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
+        except Exception as e:
+            error_msg += f"BTC Fehler: {e}. "
+    else:
+        error_msg += "BTC Modell/Scaler nicht geladen. "
+
+    # --- Gold ---
     if gold_model and gold_scaler:
         try:
             FMP_API_KEY = os.environ.get('FMP_API_KEY')
             price = float(requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}').json()[0]['price'])
             features = get_scaled_live_features("GC=F", gold_scaler)
+
             if features is not None:
                 prediction = gold_model.predict(features)[0]
                 signal = "Kauf" if prediction == 1 else "Verkauf"
-                tp = price * (1 + current_settings.get("xauusd_tp_percentage", 1.8)/100)
-                sl = price * (1 - current_settings.get("xauusd_sl_percentage", 0.8)/100)
+
+                tp_perc = current_settings.get("xauusd_tp_percentage", 1.8)
+                sl_perc = current_settings.get("xauusd_sl_percentage", 0.8)
+
+                # --- KORRIGIERTE LOGIK ---
+                if signal == "Kauf":
+                    tp = price * (1 + tp_perc / 100)
+                    sl = price * (1 - sl_perc / 100)
+                else: # Verkauf
+                    tp = price * (1 - tp_perc / 100)
+                    sl = price * (1 + sl_perc / 100)
+
                 gold_data = {"price": round(price,2), "entry": round(price,2), "take_profit": round(tp,2), "stop_loss": round(sl,2), "signal_type": signal}
-            else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
-        except Exception as e: error_msg += f"Gold Fehler: {e}. "; gold_data={"signal_type":"Fehler", "price":"Fehler"}
-    else: error_msg += "Gold Modell/Scaler fehlt. "
+            else:
+                error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
+        except Exception as e:
+            error_msg += f"Gold Fehler: {e}. "
+    else:
+        error_msg += "Gold Modell/Scaler fehlt. "
+
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
     return jsonify(response)
