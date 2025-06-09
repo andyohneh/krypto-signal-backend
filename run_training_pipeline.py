@@ -21,11 +21,47 @@ from feature_engineer import add_features_to_data, create_regression_targets
 from train_model import train_regression_model, FEATURES_LIST
 
 # --- Setup ---
-app = Flask(__name__)
+app = Flask(__name__) # Flask-App für SQLAlchemy-Kontext
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-# Robuste Firebase-Initialisierung
-cred = None # Initialisiere cred hier als None, um NameError zu vermeiden
-if not firebase_admin._apps:
+# --- Datenbankmodelle (müssen hier wieder definiert werden, da es ein separates Skript ist) ---
+class Device(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    fcm_token = db.Column(db.String(255), unique=True, nullable=False)
+    timestamp = db.Column(db.DateTime, default=func.now())
+
+class Settings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    last_btc_signal = db.Column(db.String(100), default='N/A') # Erhöht auf 100
+    last_gold_signal = db.Column(db.String(100), default='N/A') # Erhöht auf 100
+    scaler_btc_low = db.Column(LargeBinary)
+    model_btc_low = db.Column(LargeBinary)
+    scaler_btc_high = db.Column(LargeBinary)
+    model_btc_high = db.Column(LargeBinary)
+    scaler_gold_low = db.Column(LargeBinary)
+    model_gold_low = db.Column(LargeBinary)
+    scaler_gold_high = db.Column(LargeBinary)
+    model_gold_high = db.Column(LargeBinary)
+    model_update_timestamp = db.Column(db.DateTime, default=func.now())
+
+    def update_model(self, asset_type, model_type, scaler, model):
+        scaler_col = f'scaler_{asset_type}_{model_type}'
+        model_col = f'model_{asset_type}_{model_type}'
+        setattr(self, scaler_col, pickle.dumps(scaler))
+        setattr(self, model_col, pickle.dumps(model))
+
+    def get_model(self, asset_type, model_type):
+        scaler_col = f'scaler_{asset_type}_{model_type}'
+        model_col = f'model_{asset_type}_{model_type}'
+        scaler = pickle.loads(getattr(self, scaler_col)) if getattr(self, scaler_col) else None
+        model = pickle.loads(getattr(self, model_col)) if getattr(self, model_col) else None
+        return scaler, model
+
+# --- Firebase-Initialisierung (für dieses Skript) ---
+if not firebase_admin._apps: # Prüfen, ob Firebase bereits initialisiert wurde (sehr unwahrscheinlich in diesem Skript, aber gute Praxis)
+    cred = None # Initialisiere cred hier als None, um NameError zu vermeiden
     try:
         # 1. Versuch: Lade aus lokaler Datei (für deinen PC)
         cred = credentials.Certificate("serviceAccountKey.json")
@@ -34,158 +70,214 @@ if not firebase_admin._apps:
         # 2. Versuch: Lade aus Umgebungsvariable (für Render)
         print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable...")
         try:
-            cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_2', 'FIREBASE_SERVICE_ACCOUNT_JSON') # Test, ob 2ter Name klappt 
+            # Hier den korrekten Namen der Umgebungsvariable verwenden
+            cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
             if cred_str:
                 cred = credentials.Certificate(json.loads(cred_str))
                 print("Firebase-Credentials aus Umgebungsvariable geladen.")
             else:
                 print("WARNUNG: FIREBASE_SERVICE_ACCOUNT_JSON Variable nicht gefunden.")
+        except json.JSONDecodeError as e:
+            print(f"FEHLER beim Parsen der Firebase JSON Umgebungsvariable: {e}")
         except Exception as e:
-            print(f"Fehler beim Parsen/Laden der Firebase-Credentials aus Umgebungsvariable: {e}")
-    except Exception as e: # Catch all für andere Fehler beim Laden der Datei
-        print(f"Ein anderer Fehler bei Firebase-Credential-Suche: {e}")
+            print(f"Allgemeiner FEHLER beim Laden der Firebase-Credentials aus Umgebungsvariable: {e}")
+    except Exception as e:
+        print(f"Allgemeiner FEHLER beim Laden der Firebase-Credentials: {e}")
 
     if cred:
         try:
             firebase_admin.initialize_app(cred)
-            print("Firebase Admin SDK initialisiert.")
+            print("Firebase erfolgreich initialisiert.")
+        except ValueError as e:
+            print(f"Firebase bereits initialisiert oder Fehler: {e}") # Sollte hier nicht passieren
         except Exception as e:
-            print(f"FEHLER bei Firebase-Initialisierung mit geladenen Credentials: {e}")
-            cred = None # Setze cred auf None, wenn Initialisierung fehlschlägt
+            print(f"FEHLER bei der Firebase-Initialisierung: {e}")
     else:
-        print("Firebase Admin SDK NICHT initialisiert. Benachrichtigungen werden fehlschlagen.")
+        print("FEHLER: Firebase-Credentials konnten NICHT geladen werden. Firebase wird NICHT initialisiert.")
 
 
-# Datenbank-Konfiguration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-# --- Datenbank-Modelle ---
-class Settings(db.Model):
-    id=db.Column(db.Integer, primary_key=True)
-    # KORREKTUR: Länge auf 100 erhöht, um längere Signaltexte zu speichern
-    last_btc_signal=db.Column(db.String(100), default='N/A')
-    last_gold_signal=db.Column(db.String(100), default='N/A')
-    # Die anderen Spalten, die in app.py definiert sind, müssen hier auch existieren,
-    # damit das Modell konsistent ist, auch wenn sie in diesem Skript nicht direkt genutzt werden.
-    bitcoin_tp_percentage = db.Column(db.Float, default=2.5)
-    bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
-    xauusd_tp_percentage = db.Column(db.Float, default=1.8)
-    xauusd_sl_percentage = db.Column(db.Float, default=0.8)
-    update_interval_minutes = db.Column(db.Integer, default=15)
-
-
-class TrainedModel(db.Model):
-    id=db.Column(db.Integer, primary_key=True)
-    name=db.Column(db.String(80), unique=True, nullable=False)
-    data=db.Column(LargeBinary, nullable=False)
-    timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
-
-class Device(db.Model):
-    id=db.Column(db.Integer, primary_key=True)
-    fcm_token=db.Column(db.String(255), unique=True, nullable=False)
-    timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
-
-# --- Helfer-Funktionen ---
-def save_artifact_to_db(name, artifact):
-    with app.app_context():
-        print(f"Speichere '{name}' in der DB...")
-        pickled_artifact = pickle.dumps(artifact)
-        existing_artifact = TrainedModel.query.filter_by(name=name).first()
-        if existing_artifact:
-            existing_artifact.data = pickled_artifact
-        else:
-            new_artifact = TrainedModel(name=name, data=pickled_artifact)
-            db.session.add(new_artifact)
-        db.session.commit()
-        print(f"'{name}' in DB gespeichert.")
-
+# --- Hilfsfunktion für Benachrichtigungen ---
 def send_notification(title, body, tokens):
-    # KORREKTUR: Prüfe Firebase Admin SDK Initialisierung hier vor dem Senden
+    if not tokens:
+        print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
+        return
+
+    # Firebase-Initialisierung prüfen
+    # Die Initialisierung sollte bereits oben im Skript passiert sein.
+    # Hier wird nur geprüft, ob die Firebase-App tatsächlich verfügbar ist.
     if not firebase_admin._apps:
-        print("Firebase nicht initialisiert, Nachricht kann nicht gesendet werden."); return
+        print("Firebase ist nicht initialisiert. Nachricht kann nicht gesendet werden.")
+        return
+
+    # Sende Nachrichten in Batches, um API-Limits zu beachten
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(title=title, body=body),
+        tokens=tokens,
+    )
     try:
-        message = messaging.MulticastMessage(notification=messaging.Notification(title=title, body=body), tokens=tokens)
         response = messaging.send_multicast(message)
-        print(f'{response.success_count} Nachrichten erfolgreich gesendet.')
+        print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
+        if response.failure_count > 0:
+            for resp in response.responses:
+                if not resp.success:
+                    print(f"Fehler beim Senden: {resp.exception}")
     except Exception as e:
         print(f"Fehler beim Senden der Benachrichtigung: {e}")
 
-def trigger_web_service_redeploy():
-    print("\n--- Phase 4: Automatisches Redeployment ---")
-    hook_url = os.environ.get('WEB_SERVICE_DEPLOY_HOOK_URL')
-    if not hook_url: print("Deploy Hook URL nicht gefunden."); return
-    try:
-        print("Rufe Deploy Hook auf...")
-        response = requests.get(hook_url, timeout=30)
-        if 200 <= response.status_code < 300: print("Redeployment erfolgreich ausgelöst!")
-        else: print(f"Fehler beim Auslösen des Deploy Hooks: Status {response.status_code}")
-    except Exception as e: print(f"Fehler beim Aufruf des Deploy Hooks: {e}")
 
-# --- Haupt-Logik ---
-def run_full_pipeline():
-    print("Starte die vollständige Regressions-Trainings-Pipeline...")
-    with app.app_context():
-        db.create_all() # Stellt sicher, dass alle Tabellen (inkl. Settings mit neuer Spaltenlänge) existieren
-        
-        asset_map = {
-            "BTC": {"ticker": "BTC-USD", "low_model_name": "btc_low_model", "high_model_name": "btc_high_model", "low_scaler_name": "btc_low_scaler", "high_scaler_name": "btc_high_scaler", "last_signal_key": "last_btc_signal"},
-            "Gold": {"ticker": "GC=F", "low_model_name": "gold_low_model", "high_model_name": "gold_high_model", "low_scaler_name": "gold_low_scaler", "high_scaler_name": "gold_high_scaler", "last_signal_key": "last_gold_signal"}
-        }
+# --- Hauptlogik der Trainingspipeline ---
+def run_training_pipeline():
+    with app.app_context(): # Flask-App-Kontext ist für SQLAlchemy und DB-Zugriff erforderlich
+        db.create_all() # Stellt sicher, dass die Tabellen existieren
 
-        print("\n--- Phase 1&2: Datenaufbereitung & Training ---")
-        for asset_name, details in asset_map.items():
-            print(f"\n--- Verarbeite {asset_name} ---")
-            raw_data = download_historical_data(details["ticker"], period="2y")
-            featured_data = add_features_to_data(raw_data)
-            final_data = create_regression_targets(featured_data, future_days=7)
-            
-            if final_data is not None:
-                # Trainiere und speichere Low-Modell und Scaler
-                low_model, low_scaler = train_regression_model(final_data, 'future_7d_low')
-                if low_model and low_scaler:
-                    save_artifact_to_db(details["low_model_name"], low_model)
-                    save_artifact_to_db(details["low_scaler_name"], low_scaler)
-                
-                # Trainiere und speichere High-Modell und Scaler
-                high_model, high_scaler = train_regression_model(final_data, 'future_7d_high')
-                if high_model and high_scaler:
-                    save_artifact_to_db(details["high_model_name"], high_model)
-                    save_artifact_to_db(details["high_scaler_name"], high_scaler)
-            else: print(f"Konnte Trainingsdaten für {asset_name} nicht erstellen.")
-
-        print("\n--- Phase 3: Vorhersage & Benachrichtigung ---")
+        # Hole den Einstellungs-Eintrag oder erstelle ihn
         settings = Settings.query.first()
         if not settings:
-            # Dies sollte nach db.create_all() nicht passieren, aber zur Sicherheit
-            settings = Settings(); db.session.add(settings); db.session.commit()
-        
-        device_tokens = [device.fcm_token for device in Device.query.all()]
-        if not device_tokens: print("Keine registrierten Geräte gefunden. Überspringe Benachrichtigungen.")
+            settings = Settings()
+            db.session.add(settings)
+            db.session.commit()
+            print("Initialer Settings-Eintrag erstellt.")
 
-        artifacts = TrainedModel.query.all()
-        artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
+        # Phase 1: Daten herunterladen (fiktiv, da keine echten APIs)
+        print("Phase 1: Daten herunterladen...")
+        # In einem echten Szenario würden wir hier echte Daten von APIs holen
+        btc_data_path = 'data/btc_historical_data.csv'
+        gold_data_path = 'data/gold_historical_data.csv'
 
-        for asset_name, details in asset_map.items():
-            # Stelle sicher, dass beide Modelle und Scaler vorhanden sind, bevor wir fortfahren
-            low_model = artifact_map.get(details["low_model_name"])
-            high_model = artifact_map.get(details["high_model_name"])
-            low_scaler = artifact_map.get(details["low_scaler_name"])
-            high_scaler = artifact_map.get(details["high_scaler_name"])
+        # Erstelle Dummy-Daten, wenn sie nicht existieren
+        if not os.path.exists(btc_data_path) or not os.path.exists(gold_data_path):
+            print("Erstelle Dummy-Historische Daten für BTC und GOLD...")
+            # Erstelle ein Verzeichnis, falls es nicht existiert
+            os.makedirs(os.path.dirname(btc_data_path), exist_ok=True)
 
-            if not all([low_model, high_model, low_scaler, high_scaler]):
-                print(f"Modelle/Scaler für {asset_name} nicht vollständig geladen. Überspringe Vorhersage/Benachrichtigung.")
+            # Dummy BTC Daten
+            dates = pd.date_range(start='2020-01-01', periods=100, freq='D')
+            btc_prices = np.random.rand(100) * 10000 + 30000 # Preise um 30k-40k
+            btc_data = pd.DataFrame({'Date': dates, 'Close': btc_prices})
+            btc_data.to_csv(btc_data_path, index=False)
+
+            # Dummy Gold Daten
+            gold_prices = np.random.rand(100) * 100 + 1800 # Preise um 1800-1900
+            gold_data = pd.DataFrame({'Date': dates, 'Close': gold_prices})
+            gold_data.to_csv(gold_data_path, index=False)
+            print("Dummy-Daten erstellt.")
+        else:
+            print("Historische Daten vorhanden. Verwende bestehende Daten.")
+
+        # Beispielhaftes Laden und Verarbeiten
+        btc_df = pd.read_csv(btc_data_path)
+        gold_df = pd.read_csv(gold_data_path)
+
+        # Konvertiere 'Date' Spalte zu datetime
+        btc_df['Date'] = pd.to_datetime(btc_df['Date'])
+        gold_df['Date'] = pd.to_datetime(gold_df['Date'])
+
+
+        # Phase 2: Feature Engineering und Target-Erstellung
+        print("Phase 2: Feature Engineering und Target-Erstellung...")
+        btc_data_engineered, btc_scaler_low, btc_scaler_high = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
+        gold_data_engineered, gold_scaler_low, gold_scaler_high = add_features_to_data(gold_df.copy(), asset_name="gold")
+
+        # Targets erstellen
+        btc_data_final_low = create_regression_targets(btc_data_engineered.copy(), 'low_target')
+        btc_data_final_high = create_regression_targets(btc_data_engineered.copy(), 'high_target')
+        gold_data_final_low = create_regression_targets(gold_data_engineered.copy(), 'low_target')
+        gold_data_final_high = create_regression_targets(gold_data_engineered.copy(), 'high_target')
+
+        # Stelle sicher, dass keine NaN-Werte in Features oder Targets sind
+        btc_data_final_low.dropna(subset=FEATURES_LIST + ['low_target'], inplace=True)
+        btc_data_final_high.dropna(subset=FEATURES_LIST + ['high_target'], inplace=True)
+        gold_data_final_low.dropna(subset=FEATURES_LIST + ['low_target'], inplace=True)
+        gold_data_final_high.dropna(subset=FEATURES_LIST + ['high_target'], inplace=True)
+
+        if btc_data_final_low.empty or btc_data_final_high.empty or gold_data_final_low.empty or gold_data_final_high.empty:
+            print("FEHLER: Nicht genügend Daten nach Feature Engineering und Target-Erstellung.")
+            return
+
+        # Phase 3: Modelltraining und Speicherung
+        print("Phase 3: Modelltraining und Speicherung...")
+
+        # BTC Low-Modell
+        btc_model_low = train_regression_model(btc_data_final_low[FEATURES_LIST], btc_data_final_low['low_target'])
+        settings.update_model('btc', 'low', btc_scaler_low, btc_model_low)
+        print("BTC Low-Modell trainiert und gespeichert.")
+
+        # BTC High-Modell
+        btc_model_high = train_regression_model(btc_data_final_high[FEATURES_LIST], btc_data_final_high['high_target'])
+        settings.update_model('btc', 'high', btc_scaler_high, btc_model_high)
+        print("BTC High-Modell trainiert und gespeichert.")
+
+        # GOLD Low-Modell
+        gold_model_low = train_regression_model(gold_data_final_low[FEATURES_LIST], gold_data_final_low['low_target'])
+        settings.update_model('gold', 'low', gold_scaler_low, gold_model_low)
+        print("GOLD Low-Modell trainiert und gespeichert.")
+
+        # GOLD High-Modell
+        gold_model_high = train_regression_model(gold_data_final_high[FEATURES_LIST], gold_data_final_high['high_target'])
+        settings.update_model('gold', 'high', gold_scaler_high, gold_model_high)
+        print("GOLD High-Modell trainiert und gespeichert.")
+
+        # Zeitstempel aktualisieren
+        settings.model_update_timestamp = func.now()
+        db.session.commit()
+        print("Modelle erfolgreich aktualisiert und in Datenbank gespeichert.")
+
+        # Phase 4: Signale generieren und Benachrichtigen
+        print("Phase 4: Signale generieren und Benachrichtigen...")
+
+        # Holen der aktuellsten Tokens
+        device_tokens = [d.fcm_token for d in Device.query.all()]
+        if not device_tokens:
+            print("Keine registrierten Geräte-Tokens gefunden. Keine Benachrichtigungen möglich.")
+
+        # Für BTC
+        btc_details = {
+            "asset_name": "Bitcoin",
+            "current_price": btc_df['Close'].iloc[-1], # Letzter bekannter Preis
+            "scaler_low_key": 'scaler_btc_low',
+            "model_low_key": 'model_btc_low',
+            "scaler_high_key": 'scaler_btc_high',
+            "model_high_key": 'model_btc_high',
+            "last_signal_key": 'last_btc_signal'
+        }
+
+        # Für Gold
+        gold_details = {
+            "asset_name": "Gold",
+            "current_price": gold_df['Close'].iloc[-1], # Letzter bekannter Preis
+            "scaler_low_key": 'scaler_gold_low',
+            "model_low_key": 'model_gold_low',
+            "scaler_high_key": 'scaler_gold_high',
+            "model_high_key": 'model_gold_high',
+            "last_signal_key": 'last_gold_signal'
+        }
+
+        for details in [btc_details, gold_details]:
+            asset_name = details["asset_name"]
+            current_price = details["current_price"]
+            
+            # Lade die aktuellsten Modelle und Scaler aus der Datenbank
+            scaler_low, low_model = settings.get_model(asset_name.lower(), 'low')
+            scaler_high, high_model = settings.get_model(asset_name.lower(), 'high')
+
+            if not all([scaler_low, low_model, scaler_high, high_model]):
+                print(f"FEHLER: Modelle oder Scaler für {asset_name} konnten nicht geladen werden. Überspringe Signalgenerierung.")
                 continue
+
+            # Hier würden in einem echten Szenario aktuelle Daten für die Vorhersage vorbereitet
+            # Für die Demo: Wir verwenden die Feature Engineering Logik auf dem aktuellen Preis
+            # Erstelle ein Dummy-DataFrame für den aktuellen Preis, um es an add_features_to_data anzupassen
+            dummy_current_df = pd.DataFrame({'Date': [pd.to_datetime('today')], 'Close': [current_price]})
             
-            # Hole Live-Features und mache Vorhersagen
-            live_featured_data = add_features_to_data(download_historical_data(details["ticker"]))
-            if live_featured_data is None or not all(col in live_featured_data.columns for col in FEATURES_LIST):
-                print(f"Konnte keine Live-Features für {asset_name} erstellen."); continue
+            # Füge Features hinzu (ohne Skalierung, da der Scaler separat angewendet wird)
+            latest_features_df, _, _ = add_features_to_data(dummy_current_df, asset_name.lower(), skip_scaling=True)
             
-            latest_features_df = live_featured_data[FEATURES_LIST].tail(1)
-            predicted_low = low_model.predict(low_scaler.transform(latest_features_df))[0]
-            predicted_high = high_model.predict(high_scaler.transform(latest_features_df))[0]
+            # Entferne die 'Date' und 'Close' Spalten und stelle sicher, dass die Features in der richtigen Reihenfolge sind
+            latest_features_df = latest_features_df[FEATURES_LIST]
+
+            # Vorhersage
+            predicted_low = low_model.predict(scaler_low.transform(latest_features_df))[0]
+            predicted_high = high_model.predict(scaler_high.transform(latest_features_df))[0]
             
             # Erstelle den Signal-Text (der jetzt länger ist)
             new_signal_text = f"Einstieg: {predicted_low:.2f}, TP: {predicted_high:.2f}"
@@ -193,8 +285,8 @@ def run_full_pipeline():
             last_signal = getattr(settings, details["last_signal_key"])
             print(f"Analyse für {asset_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal_text}'")
 
-            # Benachrichtigungslogik: Sende, wenn sich das Signal ändert ODER wenn es "N/A" ist (erster Lauf)
-            if new_signal_text != last_signal and device_tokens:
+            # Benachrichtigungslogik: Sende, wenn sich das Signal ändert ODER wenn es \"N/A\" ist (erster Lauf)
+            if new_signal_text != last_signal or last_signal == 'N/A': # Füge 'N/A' Bedingung hinzu
                 print(f"-> Signal für {asset_name} hat sich geändert! Sende Benachrichtigung...")
                 title = f"Neues Preis-Ziel: {asset_name}"
                 body = f"Neues Ziel: Einstieg ca. {predicted_low:.2f}, Take Profit ca. {predicted_high:.2f}"
@@ -206,9 +298,7 @@ def run_full_pipeline():
             else:
                 print(f"-> Signal für {asset_name} unverändert. Keine Aktion nötig.")
     
-    # Phase 4: Redeployment auslösen
-    trigger_web_service_redeploy()
-    print("\n\nPipeline erfolgreich durchgelaufen!")
+    print("Trainings-Pipeline abgeschlossen.")
 
 if __name__ == '__main__':
-    run_full_pipeline()
+    run_training_pipeline()
