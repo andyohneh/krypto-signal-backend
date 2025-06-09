@@ -1,86 +1,65 @@
-# train_model.py (Finale Version - mit DB-Bugfix)
+# train_model.py (Finale, korrigierte Helfer-Version)
 
-import os
-import pickle
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import LargeBinary
+def train_and_evaluate_model(data):
+    """
+    Nimmt einen DataFrame mit Features entgegen, erstellt die Zielvariable,
+    trainiert ein Modell und gibt das Modell, den Scaler und die
+    Test-Genauigkeit zurück.
+    """
+    if data is None or data.empty:
+        print("FEHLER: Leere Daten an train_and_evaluate_model übergeben.")
+        return None, None, 0.0
 
-# --- Datenbank-Setup ---
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+    print("Starte Modelltraining und -bewertung...")
 
-class TrainedModel(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(80), unique=True, nullable=False)
-    data = db.Column(LargeBinary, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+    # KORREKTUR: Die Logik zur Erstellung der Zielvariable wird hier hinzugefügt
+    # Wir wollen vorhersagen, ob der Preis am NÄCHSTEN Tag steigt.
+    data['target'] = np.where(data['Adj Close'].shift(-1) > data['Adj Close'], 1, 0)
+    # Entferne Zeilen, wo das Ziel nicht berechnet werden konnte (die letzte Zeile)
+    data.dropna(subset=['target'], inplace=True)
 
-def save_artifact_to_db(name, artifact):
-    """Serialisiert ein Objekt und speichert es in der DB (Update oder Insert)."""
-    print(f"Speichere '{name}' in der Datenbank...")
-    pickled_artifact = pickle.dumps(artifact)
+    # 1. Features und Ziel (y) trennen
+    features = [
+        'daily_return',
+        'SMA_10',
+        'SMA_50',
+        'sma_signal',
+        'RSI_14',
+        'MACD_12_26_9',
+        'MACDh_12_26_9',
+        'MACDs_12_26_9'
+    ]
+    X = data[features]
+    y = data['target']
 
-    with app.app_context():
-        # KORREKTUR: Wir suchen immer nach dem 'name', nicht der 'id'.
-        existing_artifact = TrainedModel.query.filter_by(name=name).first()
-
-        if existing_artifact:
-            existing_artifact.data = pickled_artifact
-            print(f"'{name}' in der DB aktualisiert.")
-        else:
-            new_artifact = TrainedModel(name=name, data=pickled_artifact)
-            db.session.add(new_artifact)
-            print(f"'{name}' neu in der DB erstellt.")
-
-        db.session.commit()
-
-def train_model_for_asset(input_filename, model_name, scaler_name):
-    print(f"\n--- Starte DB-Modelltraining für {model_name} ---")
-    data = pd.read_csv(input_filename, index_col=0, parse_dates=True)
-    data['target'] = np.where(data['Close'].shift(-1) > data['Close'], 1, 0)
-    data.dropna(inplace=True)
-    # 2. Features und Ziel trennen
-# KORREKTUR: Wir fügen die neuen MACD-Spalten zur Liste der Features hinzu!
-features = [
-    'daily_return', 
-    'SMA_10', 
-    'SMA_50', 
-    'sma_signal', 
-    'RSI_14',
-    'MACD_12_26_9', # NEU
-    'MACDh_12_26_9', # NEU
-    'MACDs_12_26_9'  # NEU
-]
-X = data[features]
-y = data['target']
+    # 2. Daten in Trainings- und Test-Set aufteilen
     split_index = int(len(X) * 0.8)
     X_train, X_test = X[:split_index], X[split_index:]
     y_train, y_test = y[:split_index], y[split_index:]
+
+    if len(X_train) == 0 or len(X_test) == 0:
+        print("FEHLER: Nicht genügend Daten zum Aufteilen in Training und Test.")
+        return None, None, 0.0
+
+    # 3. Daten skalieren
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
+    print("Daten erfolgreich skaliert.")
+
+    # 4. Modell trainieren
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train_scaled, y_train)
+    print("Modelltraining abgeschlossen.")
 
+    # 5. Modell bewerten
     test_accuracy = model.score(X_test_scaled, y_test)
-    print(f"Modell-Genauigkeit auf Test-Daten: {test_accuracy:.2%}")
+    print(f"Genauigkeit auf Test-Daten (ungesehen): {test_accuracy:.2%}")
 
-    save_artifact_to_db(name=model_name, artifact=model)
-    save_artifact_to_db(name=scaler_name, artifact=scaler)
-
-if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-
-    train_model_for_asset("btc_data_with_features.csv", "btc_model", "btc_scaler")
-    train_model_for_asset("gold_data_with_features.csv", "gold_model", "gold_scaler")
-
-    print("\nAlle Modelle und Scaler wurden in die Datenbank geschrieben.")
+    # 6. Fertige Werkzeuge zurückgeben
+    return model, scaler, test_accuracy

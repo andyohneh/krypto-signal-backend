@@ -39,3 +39,4 @@ settings.json
 .vscode/
 *.swp
 *.swo
+serviceAccountKey.json
