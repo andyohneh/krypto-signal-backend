@@ -95,6 +95,7 @@ if not firebase_admin._apps:
         print("FEHLER: Firebase-Credentials konnten NICHT geladen werden. Firebase wird NICHT initialisiert.")
 
 
+# --- Hilfsfunktion für Benachrichtigungen (NUR FÜR DEBUGGING MIT EINZELNACHRICHT) ---
 def send_notification(title, body, tokens):
     if not tokens:
         print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
@@ -104,19 +105,37 @@ def send_notification(title, body, tokens):
         print("Firebase ist nicht initialisiert. Nachricht kann nicht gesendet werden.")
         return
 
-    message = messaging.MulticastMessage(
-        notification=messaging.Notification(title=title, body=body),
-        tokens=tokens,
-    )
-    try:
-        response = messaging.send_multicast(message)
-        print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
-        if response.failure_count > 0:
-            for resp in response.responses:
-                if not resp.success:
-                    print(f"Fehler beim Senden: {resp.exception}")
-    except Exception as e:
-        print(f"Fehler beim Senden der Benachrichtigung: {e}")
+    # --- START DEBUGGING-ÄNDERUNG ---
+    # Sende nur an das ERSTE Token in der Liste, als einfache Nachricht
+    # und nicht als MulticastMessage, um den /batch-Endpunkt zu umgehen
+    if tokens: # Stelle sicher, dass mindestens ein Token existiert
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            token=tokens[0], # Nimm nur das erste Token
+        )
+        try:
+            response = messaging.send(message) # Sende einzelne Nachricht
+            print(f"DEBUG: Einzelne Nachricht erfolgreich gesendet: {response}")
+        except Exception as e:
+            print(f"DEBUG: Fehler beim Senden einer einzelnen Benachrichtigung: {e}")
+    else:
+        print("DEBUG: Keine Tokens zum Senden einer einzelnen Testnachricht vorhanden.")
+    # --- ENDE DEBUGGING-ÄNDERUNG ---
+
+    # Den ursprünglichen MulticastMessage-Code für diesen Test NICHT verwenden:
+    # message = messaging.MulticastMessage(
+    #     notification=messaging.Notification(title=title, body=body),
+    #     tokens=tokens,
+    # )
+    # try:
+    #     response = messaging.send_multicast(message)
+    #     print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
+    #     if response.failure_count > 0:
+    #         for resp in response.responses:
+    #             if not resp.success:
+    #                 print(f"Fehler beim Senden: {resp.exception}")
+    # except Exception as e:
+    #     print(f"Fehler beim Senden der Benachrichtigung: {e}")
 
 
 def run_training_pipeline():
@@ -162,8 +181,6 @@ def run_training_pipeline():
 
 
         print("Phase 2: Feature Engineering und Target-Erstellung...")
-        # feature_engineer.py gibt MinMaxScaler zurück, die wir hier nicht direkt speichern,
-        # da train_model.py seine eigenen StandardScaler zurückgibt.
         btc_data_engineered, _, _ = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
         gold_data_engineered, _, _ = add_features_to_data(gold_df.copy(), asset_name="gold")
 
@@ -274,7 +291,7 @@ def run_training_pipeline():
             print(f"Analyse für {asset_display_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal_text}'")
 
             if new_signal_text != last_signal or last_signal == 'N/A':
-                print(f"-> Signal für {asset_display_name} hat sich geändert! Sende Benachrichtigung...") # KORRIGIERT: asset_display_name
+                print(f"-> Signal für {asset_display_name} hat sich geändert! Sende Benachrichtigung...")
                 title = f"Neues Preis-Ziel: {asset_display_name}"
                 body = f"Neues Ziel: Einstieg ca. {predicted_low:.2f}, Take Profit ca. {predicted_high:.2f}"
                 send_notification(title, body, device_tokens)
