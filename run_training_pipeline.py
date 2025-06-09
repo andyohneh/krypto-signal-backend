@@ -175,6 +175,7 @@ def run_training_pipeline():
 
         # Phase 2: Feature Engineering und Target-Erstellung
         print("Phase 2: Feature Engineering und Target-Erstellung...")
+        # HIER ERWARTEN WIR, DASS add_features_to_data den asset_name und die Scaler akzeptiert
         btc_data_engineered, btc_scaler_low, btc_scaler_high = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
         gold_data_engineered, gold_scaler_low, gold_scaler_high = add_features_to_data(gold_df.copy(), asset_name="gold")
 
@@ -270,6 +271,7 @@ def run_training_pipeline():
             dummy_current_df = pd.DataFrame({'Date': [pd.to_datetime('today')], 'Close': [current_price]})
             
             # Füge Features hinzu (ohne Skalierung, da der Scaler separat angewendet wird)
+            # WICHTIG: Hier asset_name übergeben, wenn add_features_to_data es akzeptiert
             latest_features_df, _, _ = add_features_to_data(dummy_current_df, asset_name.lower(), skip_scaling=True)
             
             # Entferne die 'Date' und 'Close' Spalten und stelle sicher, dass die Features in der richtigen Reihenfolge sind
