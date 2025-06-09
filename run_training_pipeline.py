@@ -1,83 +1,33 @@
+# run_training_pipeline.py (Version 2.0 - Trainiert Regressions-Modelle)
+
 import os
 import json
 import pickle
-import requests
 from dotenv import load_dotenv
-
-# Lade die .env-Datei (jetzt nur noch für DATABASE_URL)
 load_dotenv()
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import LargeBinary, func
-import firebase_admin
-from firebase_admin import credentials, messaging
 
-# Importiere unsere Helfer-Funktionen
+# Importiere unsere sauberen Helfer-Funktionen
 from data_manager import download_historical_data
-from feature_engineer import add_features_to_data
-from train_model import train_and_evaluate_model, FEATURES_LIST
+from feature_engineer import add_features_to_data, create_regression_targets
+from train_model import train_regression_model
 
-# --- Setup für Datenbank und Firebase ---
+# --- Setup (unverändert) ---
 app = Flask(__name__)
-
-# --- Robuste Firebase-Initialisierung ---
-# Prüft, ob Firebase schon initialisiert wurde (wichtig bei mehreren Skripten)
-if not firebase_admin._apps:
-    try:
-        # Versucht zuerst, die lokale Datei zu laden
-        cred = credentials.Certificate("serviceAccountKey.json")
-        print("Firebase-Credentials aus lokaler Datei 'serviceAccountKey.json' geladen.")
-    except FileNotFoundError:
-        # Wenn die Datei nicht da ist (wie auf Render), wird die Umgebungsvariable versucht
-        print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable (für Render)...")
-        try:
-            cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
-            if cred_str:
-                cred_json = json.loads(cred_str)
-                cred = credentials.Certificate(cred_json)
-                print("Firebase-Credentials aus Umgebungsvariable geladen.")
-            else:
-                cred = None
-                print("WARNUNG: Keine Firebase-Credentials in Umgebungsvariable gefunden.")
-        except Exception as e:
-            cred = None
-            print(f"Fehler beim Parsen der Firebase-Credentials aus Umgebungsvariable: {e}")
-    except Exception as e:
-        cred = None
-        print(f"Ein anderer Fehler ist bei der Firebase-Credential-Suche aufgetreten: {e}")
-
-    # Initialisiere die App nur, wenn die Credentials erfolgreich geladen wurden
-    if cred:
-        firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK initialisiert.")
-    else:
-        print("Firebase Admin SDK NICHT initialisiert. Benachrichtigungen werden fehlschlagen.")
-# ----------------------------------------------
-
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# --- Datenbank-Modelle ---
-class Settings(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    last_btc_signal = db.Column(db.String(10), default='N/A')
-    last_gold_signal = db.Column(db.String(10), default='N/A')
-    bitcoin_tp_percentage = db.Column(db.Float, default=2.5); bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
-    xauusd_tp_percentage = db.Column(db.Float, default=1.8); xauusd_sl_percentage = db.Column(db.Float, default=0.8)
-    update_interval_minutes = db.Column(db.Integer, default=15)
-
+# --- Datenbank-Modelle (unverändert) ---
 class TrainedModel(db.Model):
     id = db.Column(db.Integer, primary_key=True); name = db.Column(db.String(80), unique=True, nullable=False)
     data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 
-class Device(db.Model):
-    id = db.Column(db.Integer, primary_key=True); fcm_token = db.Column(db.String(255), unique=True, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
-
-
 def save_artifact_to_db(name, artifact):
+    """Speichert ein Artefakt (Modell/Scaler) in der DB."""
     print(f"Speichere '{name}' in der Datenbank...")
     pickled_artifact = pickle.dumps(artifact)
     existing_artifact = TrainedModel.query.filter_by(name=name).first()
@@ -90,90 +40,45 @@ def save_artifact_to_db(name, artifact):
         print(f"'{name}' neu in der DB erstellt.")
     db.session.commit()
 
-def send_notification(title, body, tokens):
-    if not firebase_admin._apps:
-        print("Firebase nicht initialisiert, kann keine Nachricht senden.")
-        return
-    try:
-        message = messaging.MulticastMessage(notification=messaging.Notification(title=title, body=body), tokens=tokens)
-        response = messaging.send_multicast(message)
-        print(f'{response.success_count} Nachrichten erfolgreich gesendet.')
-    except Exception as e:
-        print(f"Fehler beim Senden der Benachrichtigung: {e}")
+def run_full_regression_pipeline():
+    print("Starte die vollständige Regressions-Trainings-Pipeline...")
 
-def trigger_web_service_redeploy():
-    print("\n--- Phase 4: Automatisches Redeployment auslösen ---")
-    hook_url = os.environ.get('WEB_SERVICE_DEPLOY_HOOK_URL')
-    if not hook_url:
-        print("Deploy Hook URL nicht gefunden. Überspringe automatischen Neustart.")
-        return
-    try:
-        print("Rufe Deploy Hook auf...")
-        requests.get(hook_url, timeout=30)
-        print("Redeployment erfolgreich ausgelöst!")
-    except Exception as e:
-        print(f"Fehler beim Aufruf des Deploy Hooks: {e}")
-
-def run_full_pipeline():
-    print("Starte die vollständige Trainings- und Benachrichtigungs-Pipeline...")
     with app.app_context():
         db.create_all()
+
         asset_map = {
-            "BTC": {"ticker": "BTC-USD", "model_name": "btc_model", "scaler_name": "btc_scaler", "last_signal_key": "last_btc_signal"},
-            "Gold": {"ticker": "GC=F", "model_name": "gold_model", "scaler_name": "gold_scaler", "last_signal_key": "last_gold_signal"}
+            "BTC": {"ticker": "BTC-USD"},
+            "Gold": {"ticker": "GC=F"}
         }
 
-        print("\n--- Phase 1&2: Datenaufbereitung & Training ---")
         for asset_name, details in asset_map.items():
             print(f"\n--- Verarbeite {asset_name} ---")
-            raw_data = download_historical_data(details["ticker"])
+
+            # 1. Daten holen und Features erstellen
+            raw_data = download_historical_data(details["ticker"], period="2y") # Längere Historie für bessere Modelle
             featured_data = add_features_to_data(raw_data)
-            if featured_data is not None:
-                model, scaler, _ = train_and_evaluate_model(featured_data)
-                if model and scaler:
-                    save_artifact_to_db(details["model_name"], model)
-                    save_artifact_to_db(details["scaler_name"], scaler)
-        
-        print("\n--- Phase 3: Vorhersage & Benachrichtigung ---")
-        settings = Settings.query.first()
-        if not settings:
-            settings = Settings(); db.session.add(settings); db.session.commit()
-        device_tokens = [device.fcm_token for device in Device.query.all()]
-        if not device_tokens:
-            print("Keine registrierten Geräte gefunden. Überspringe Benachrichtigungen.")
-        
-        artifacts = TrainedModel.query.all()
-        artifact_map = {artifact.name: pickle.loads(artifact.data) for artifact in artifacts}
 
-        for asset_name, details in asset_map.items():
-            model = artifact_map.get(details["model_name"])
-            scaler = artifact_map.get(details["scaler_name"])
-            if not model or not scaler:
-                print(f"Modell/Scaler für {asset_name} nicht geladen."); continue
-            
-            live_featured_data = add_features_to_data(download_historical_data(details["ticker"]))
-            if live_featured_data is None or not all(col in live_featured_data.columns for col in FEATURES_LIST):
-                print(f"Konnte keine Live-Features für {asset_name} erstellen."); continue
+            # 2. Regressions-Ziele erstellen (z.B. für die nächsten 7 Tage)
+            final_data_for_training = create_regression_targets(featured_data, future_days=7)
 
-            features_for_scaling = live_featured_data[FEATURES_LIST]
-            scaled_features = scaler.transform(features_for_scaling)
-            latest_features = scaled_features[-1].reshape(1, -1)
-            prediction = model.predict(latest_features)[0]
-            new_signal = "Kauf" if prediction == 1 else "Verkauf"
-            last_signal = getattr(settings, details["last_signal_key"])
-            print(f"Analyse für {asset_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal}'")
+            if final_data_for_training is not None:
+                # 3. Zwei Modelle trainieren: eins für den Tiefst-, eins für den Höchstpreis
 
-            if new_signal != last_signal and device_tokens:
-                print(f"-> Signal für {asset_name} hat sich geändert! Sende Benachrichtigung...")
-                title = f"Neues Signal: {asset_name}"; body = f"Das Handelssignal für {asset_name} ist jetzt: {new_signal.upper()}"
-                send_notification(title, body, device_tokens)
-                setattr(settings, details["last_signal_key"], new_signal)
-                db.session.commit()
+                # Modell für den Tiefstpreis (potenzieller Einstieg)
+                low_model, low_scaler = train_regression_model(final_data_for_training, 'future_7d_low')
+                if low_model and low_scaler:
+                    save_artifact_to_db(f"{asset_name.lower()}_low_model", low_model)
+                    save_artifact_to_db(f"{asset_name.lower()}_low_scaler", low_scaler)
+
+                # Modell für den Höchstpreis (potenzieller Take Profit)
+                high_model, high_scaler = train_regression_model(final_data_for_training, 'future_7d_high')
+                if high_model and high_scaler:
+                    save_artifact_to_db(f"{asset_name.lower()}_high_model", high_model)
+                    save_artifact_to_db(f"{asset_name.lower()}_high_scaler", high_scaler)
             else:
-                print(f"-> Signal für {asset_name} unverändert.")
-    
-    trigger_web_service_redeploy()
-    print("\n\nPipeline erfolgreich durchgelaufen!")
+                print(f"Konnte Trainingsdaten für {asset_name} nicht erstellen.")
+
+    print("\n\nRegressions-Pipeline erfolgreich durchgelaufen!")
 
 if __name__ == '__main__':
-    run_full_pipeline()
+    run_full_regression_pipeline()
