@@ -67,25 +67,27 @@ def add_features_to_data(df, asset_name="", skip_scaling=False):
     df_copy['ATRr_14'] = tr.ewm(span=14, adjust=False).mean() # Smooth mit EMA
 
     # Fülle alle NaN-Werte, die durch die Indikatorberechnungen entstehen (z.B. am Anfang)
-    # Beachte: 'inplace=True' wurde hier in 'df_copy = df_copy.fillna(0)' geändert,
-    # um die Pandas FutureWarning zu vermeiden.
     df_copy = df_copy.fillna(0) 
 
-    # Features, die skaliert werden sollen
+    # FEATURES_LIST in train_model.py enthält NICHT 'Close'
+    # Daher skalieren wir 'Close' hier nicht als Feature, wenn train_model.py es nicht erwartet.
     features_to_scale = [
-        'Close', 'daily_return', 'SMA_10', 'SMA_50', 'RSI_14',
+        'daily_return', 'SMA_10', 'SMA_50', 'RSI_14',
         'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9', 'ATRr_14'
     ]
 
-    # Initialisiere Scaler
-    scaler_low = MinMaxScaler(feature_range=(0, 1))
-    scaler_high = MinMaxScaler(feature_range=(0, 1))
+    # Initialisiere Scaler (diese MinMaxScalers werden hier nur verwendet, wenn skip_scaling=False)
+    # Beachte: train_model.py wird seine eigenen StandardScalers für das Modelltraining zurückgeben.
+    scaler_minmax_low = MinMaxScaler(feature_range=(0, 1))
+    scaler_minmax_high = MinMaxScaler(feature_range=(0, 1))
     
     if not skip_scaling:
-        df_copy[features_to_scale] = scaler_low.fit_transform(df_copy[features_to_scale])
-        _ = scaler_high.fit_transform(df_copy[features_to_scale]) 
+        df_copy[features_to_scale] = scaler_minmax_low.fit_transform(df_copy[features_to_scale])
+        # Hier wird der gleiche MinMax-Scaler gefittet, da wir die Features nur einmal auf diese Weise vorbereiten
+        _ = scaler_minmax_high.fit_transform(df_copy[features_to_scale]) 
     
-    return df_copy, scaler_low, scaler_high
+    # Rückgabe des DataFrame und der MinMaxScalers (auch wenn sie aktuell nicht in run_training_pipeline.py genutzt werden)
+    return df_copy, scaler_minmax_low, scaler_minmax_high
 
 # Die create_regression_targets Funktion bleibt gleich
 def create_regression_targets(df, target_col):

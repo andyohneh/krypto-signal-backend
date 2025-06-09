@@ -18,15 +18,16 @@ import numpy as np
 # Importiere unsere sauberen Helfer-Funktionen und die Feature-Liste
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data, create_regression_targets
-from train_model import train_regression_model, FEATURES_LIST # Stelle sicher, dass FEATURES_LIST hier importiert wird
+# Importiere train_regression_model und FEATURES_LIST
+from train_model import train_regression_model, FEATURES_LIST
 
 # --- Setup ---
-app = Flask(__name__) # Flask-App für SQLAlchemy-Kontext
+app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# --- Datenbankmodelle (müssen hier wieder definiert werden, da es ein separates Skript ist) ---
+# --- Datenbankmodelle ---
 class Device(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     fcm_token = db.Column(db.String(255), unique=True, nullable=False)
@@ -36,6 +37,7 @@ class Settings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     last_btc_signal = db.Column(db.String(100), default='N/A')
     last_gold_signal = db.Column(db.String(100), default='N/A')
+    # Hier werden die Scaler gespeichert, die von train_model.py kommen (StandardScaler)
     scaler_btc_low = db.Column(LargeBinary)
     model_btc_low = db.Column(LargeBinary)
     scaler_btc_high = db.Column(LargeBinary)
@@ -47,21 +49,19 @@ class Settings(db.Model):
     model_update_timestamp = db.Column(db.DateTime, default=func.now())
 
     def update_model(self, asset_type, model_type, scaler, model):
-        # asset_type sollte hier 'btc' oder 'gold' sein
         scaler_col = f'scaler_{asset_type}_{model_type}'
         model_col = f'model_{asset_type}_{model_type}'
         setattr(self, scaler_col, pickle.dumps(scaler))
         setattr(self, model_col, pickle.dumps(model))
 
     def get_model(self, asset_type, model_type):
-        # asset_type sollte hier 'btc' oder 'gold' sein
         scaler_col = f'scaler_{asset_type}_{model_type}'
         model_col = f'model_{asset_type}_{model_type}'
         scaler = pickle.loads(getattr(self, scaler_col)) if getattr(self, scaler_col) else None
         model = pickle.loads(getattr(self, model_col)) if getattr(self, model_col) else None
         return scaler, model
 
-# --- Firebase-Initialisierung (für dieses Skript) ---
+# Firebase-Initialisierung
 if not firebase_admin._apps:
     cred = None
     try:
@@ -95,7 +95,6 @@ if not firebase_admin._apps:
         print("FEHLER: Firebase-Credentials konnten NICHT geladen werden. Firebase wird NICHT initialisiert.")
 
 
-# --- Hilfsfunktion für Benachrichtigungen ---
 def send_notification(title, body, tokens):
     if not tokens:
         print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
@@ -120,7 +119,6 @@ def send_notification(title, body, tokens):
         print(f"Fehler beim Senden der Benachrichtigung: {e}")
 
 
-# --- Hauptlogik der Trainingspipeline ---
 def run_training_pipeline():
     with app.app_context():
         db.create_all()
@@ -142,14 +140,12 @@ def run_training_pipeline():
 
             dates = pd.date_range(start='2020-01-01', periods=100, freq='D')
             btc_prices = np.random.rand(100) * 10000 + 30000
-            # Füge Dummy 'High' und 'Low' hinzu, damit feature_engineer sie findet
             btc_high = btc_prices * (1 + np.random.uniform(0.001, 0.005, size=len(btc_prices)))
             btc_low = btc_prices * (1 - np.random.uniform(0.001, 0.005, size=len(btc_prices)))
             btc_data = pd.DataFrame({'Date': dates, 'Close': btc_prices, 'High': btc_high, 'Low': btc_low})
             btc_data.to_csv(btc_data_path, index=False)
 
             gold_prices = np.random.rand(100) * 100 + 1800
-            # Füge Dummy 'High' und 'Low' hinzu
             gold_high = gold_prices * (1 + np.random.uniform(0.001, 0.005, size=len(gold_prices)))
             gold_low = gold_prices * (1 - np.random.uniform(0.001, 0.005, size=len(gold_prices)))
             gold_data = pd.DataFrame({'Date': dates, 'Close': gold_prices, 'High': gold_high, 'Low': gold_low})
@@ -166,20 +162,17 @@ def run_training_pipeline():
 
 
         print("Phase 2: Feature Engineering und Target-Erstellung...")
-        btc_data_engineered, btc_scaler_low, btc_scaler_high = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
-        gold_data_engineered, gold_scaler_low, gold_scaler_high = add_features_to_data(gold_df.copy(), asset_name="gold")
+        # feature_engineer.py gibt MinMaxScaler zurück, die wir hier nicht direkt speichern,
+        # da train_model.py seine eigenen StandardScaler zurückgibt.
+        # Wir benötigen die Scaler aus feature_engineer.py nur, wenn wir Features ohne Training skalieren.
+        btc_data_engineered, _, _ = add_features_to_data(btc_df.copy(), asset_name="bitcoin")
+        gold_data_engineered, _, _ = add_features_to_data(gold_df.copy(), asset_name="gold")
 
         btc_data_final_low = create_regression_targets(btc_data_engineered.copy(), 'low_target')
         btc_data_final_high = create_regression_targets(btc_data_engineered.copy(), 'high_target')
         gold_data_final_low = create_regression_targets(gold_data_engineered.copy(), 'low_target')
         gold_data_final_high = create_regression_targets(gold_data_engineered.copy(), 'high_target')
 
-        # WICHTIG: Sicherstellen, dass die Zielspalten im DataFrame sind, bevor wir .dropna aufrufen
-        # und bevor wir das DataFrame an train_regression_model übergeben.
-        # Hier ist ein kleiner Workaround, um sicherzustellen, dass die Targets immer da sind
-        # und die Dropna-Funktion damit arbeiten kann. Normalerweise würden diese Zeilen
-        # in der create_regression_targets Funktion selbst gehandhabt werden.
-        # Aber da wir hier nur die subset von dropna prüfen, sollte es passen.
         all_features_and_low_target = FEATURES_LIST + ['low_target']
         all_features_and_high_target = FEATURES_LIST + ['high_target']
 
@@ -188,35 +181,51 @@ def run_training_pipeline():
         gold_data_final_low.dropna(subset=all_features_and_low_target, inplace=True)
         gold_data_final_high.dropna(subset=all_features_and_high_target, inplace=True)
 
-
         if btc_data_final_low.empty or btc_data_final_high.empty or gold_data_final_low.empty or gold_data_final_high.empty:
-            print("FEHLER: Nicht genügend Daten nach Feature Engineering und Target-Erstellung.")
+            print("FEHLER: Nicht genügend Daten nach Feature Engineering und Target-Erstellung. Modelle werden nicht trainiert.")
             return
 
         print("Phase 3: Modelltraining und Speicherung...")
 
-        # --- KORREKTUR: ÜBERGIB DAS GESAMTE DATAFRAME UND DEN STRING-NAMEN DES ZIELS ---
-        # train_regression_model wird intern die Features und das Target auswählen
-        btc_model_low = train_regression_model(btc_data_final_low, 'low_target') # Ganzer DF
-        settings.update_model('btc', 'low', btc_scaler_low, btc_model_low)
-        print("BTC Low-Modell trainiert und gespeichert.")
+        # --- Hier speichern wir die Modelle UND Scaler, die von train_model.py zurückgegeben werden ---
+        btc_model_low, btc_scaler_low_from_train = train_regression_model(btc_data_final_low, 'low_target')
+        if btc_model_low and btc_scaler_low_from_train: # Stelle sicher, dass das Training erfolgreich war
+            settings.update_model('btc', 'low', btc_scaler_low_from_train, btc_model_low)
+            print("BTC Low-Modell trainiert und gespeichert.")
+        else:
+            print("WARNUNG: BTC Low-Modell konnte nicht trainiert werden. Überspringe Speicherung.")
 
-        btc_model_high = train_regression_model(btc_data_final_high, 'high_target') # Ganzer DF
-        settings.update_model('btc', 'high', btc_scaler_high, btc_model_high)
-        print("BTC High-Modell trainiert und gespeichert.")
+        btc_model_high, btc_scaler_high_from_train = train_regression_model(btc_data_final_high, 'high_target')
+        if btc_model_high and btc_scaler_high_from_train:
+            settings.update_model('btc', 'high', btc_scaler_high_from_train, btc_model_high)
+            print("BTC High-Modell trainiert und gespeichert.")
+        else:
+            print("WARNUNG: BTC High-Modell konnte nicht trainiert werden. Überspringe Speicherung.")
 
-        gold_model_low = train_regression_model(gold_data_final_low, 'low_target') # Ganzer DF
-        settings.update_model('gold', 'low', gold_scaler_low, gold_model_low)
-        print("GOLD Low-Modell trainiert und gespeichert.")
+        gold_model_low, gold_scaler_low_from_train = train_regression_model(gold_data_final_low, 'low_target')
+        if gold_model_low and gold_scaler_low_from_train:
+            settings.update_model('gold', 'low', gold_scaler_low_from_train, gold_model_low)
+            print("GOLD Low-Modell trainiert und gespeichert.")
+        else:
+            print("WARNUNG: GOLD Low-Modell konnte nicht trainiert werden. Überspringe Speicherung.")
 
-        gold_model_high = train_regression_model(gold_data_final_high, 'high_target') # Ganzer DF
-        settings.update_model('gold', 'high', gold_scaler_high, gold_model_high)
-        print("GOLD High-Modell trainiert und gespeichert.")
+        gold_model_high, gold_scaler_high_from_train = train_regression_model(gold_data_final_high, 'high_target')
+        if gold_model_high and gold_scaler_high_from_train:
+            settings.update_model('gold', 'high', gold_scaler_high_from_train, gold_model_high)
+            print("GOLD High-Modell trainiert und gespeichert.")
+        else:
+            print("WARNUNG: GOLD High-Modell konnte nicht trainiert werden. Überspringe Speicherung.")
         # --------------------------------------------------------------------------------------
 
-        settings.model_update_timestamp = func.now()
-        db.session.commit()
-        print("Modelle erfolgreich aktualisiert und in Datenbank gespeichert.")
+        # Aktualisiere den Zeitstempel nur, wenn Modelle erfolgreich trainiert und gespeichert wurden
+        # oder wenn zumindest ein Versuch unternommen wurde.
+        if (btc_model_low or btc_model_high or gold_model_low or gold_model_high):
+            settings.model_update_timestamp = func.now()
+            db.session.commit()
+            print("Modelle erfolgreich aktualisiert und in Datenbank gespeichert (wenn Training erfolgreich war).")
+        else:
+            print("KEINE Modelle erfolgreich trainiert oder gespeichert. Zeitstempel nicht aktualisiert.")
+
 
         print("Phase 4: Signale generieren und Benachrichtigen...")
 
@@ -243,11 +252,12 @@ def run_training_pipeline():
             current_price = details["current_price"]
             
             # Lade die aktuellsten Modelle und Scaler aus der Datenbank
-            scaler_low, low_model = settings.get_model(asset_key, 'low') # Verwendet asset_key
-            scaler_high, high_model = settings.get_model(asset_key, 'high') # Verwendet asset_key
+            scaler_for_predict, model_for_predict = settings.get_model(asset_key, 'low') # Beispiel für low-Modell
+            # Um das High-Modell auch zu nutzen, müsstest du es ebenfalls laden
+            _, high_model_for_predict = settings.get_model(asset_key, 'high') # Lade High-Modell extra
 
-            if not all([scaler_low, low_model, scaler_high, high_model]):
-                print(f"FEHLER: Modelle oder Scaler für {asset_display_name} konnten nicht geladen werden. Überspringe Signalgenerierung.")
+            if not all([scaler_for_predict, model_for_predict, high_model_for_predict]):
+                print(f"FEHLER: Modelle oder Scaler für {asset_display_name} konnten für Vorhersage nicht geladen werden. Überspringe Signalgenerierung.")
                 continue
 
             dummy_current_df = pd.DataFrame({
@@ -258,19 +268,23 @@ def run_training_pipeline():
                 'Low': [current_price * (1 - np.random.uniform(0.001, 0.005))]
             })
             
-            # Füge Features hinzu (ohne Skalierung, da der Scaler separat angewendet wird)
-            # asset_name für add_features_to_data ist immer noch "bitcoin" oder "gold"
+            # Features aus aktuellem Datenpunkt extrahieren (ohne Skalierung in feature_engineer)
+            # und dann mit dem GELADENEN SCALER skalieren.
             latest_features_df, _, _ = add_features_to_data(dummy_current_df, asset_display_name.lower(), skip_scaling=True)
             
-            latest_features_df = latest_features_df[FEATURES_LIST]
+            # Sicherstellen, dass nur die Features in der richtigen Reihenfolge vorhanden sind
+            X_predict = latest_features_df[FEATURES_LIST]
 
             # Vorhersage
-            predicted_low = low_model.predict(scaler_low.transform(latest_features_df))[0]
-            predicted_high = high_model.predict(scaler_high.transform(latest_features_df))[0]
+            # Skaliere die Features für die Vorhersage mit dem GELADENEN SCALER!
+            X_predict_scaled = scaler_for_predict.transform(X_predict)
+            
+            predicted_low = model_for_predict.predict(X_predict_scaled)[0]
+            predicted_high = high_model_for_predict.predict(X_predict_scaled)[0] # Vorhersage mit High-Modell
             
             new_signal_text = f"Einstieg: {predicted_low:.2f}, TP: {predicted_high:.2f}"
             
-            last_signal = getattr(settings, f'last_{asset_key}_signal') # Verwendet asset_key
+            last_signal = getattr(settings, f'last_{asset_key}_signal')
             print(f"Analyse für {asset_display_name}: Letztes Signal='{last_signal}', Neues Signal='{new_signal_text}'")
 
             if new_signal_text != last_signal or last_signal == 'N/A':
@@ -279,7 +293,7 @@ def run_training_pipeline():
                 body = f"Neues Ziel: Einstieg ca. {predicted_low:.2f}, Take Profit ca. {predicted_high:.2f}"
                 send_notification(title, body, device_tokens)
                 
-                setattr(settings, f'last_{asset_key}_signal', new_signal_text) # Verwendet asset_key
+                setattr(settings, f'last_{asset_key}_signal', new_signal_text)
                 db.session.commit()
             else:
                 print(f"-> Signal für {asset_display_name} unverändert. Keine Aktion nötig.")
