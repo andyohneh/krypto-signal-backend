@@ -97,7 +97,7 @@ if not firebase_admin._apps:
         print("FEHLER: Firebase-Credentials konnten NICHT geladen werden. Firebase wird NICHT initialisiert.")
 
 
-# --- Hilfsfunktion für Benachrichtigungen (Zurück auf MulticastMessage) ---
+# --- Hilfsfunktion für Benachrichtigungen (Senden von Einzelnachrichten in Schleife) ---
 def send_notification(title, body, tokens):
     if not tokens:
         print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
@@ -107,19 +107,23 @@ def send_notification(title, body, tokens):
         print("Firebase ist nicht initialisiert. Nachricht kann nicht gesendet werden.")
         return
 
-    message = messaging.MulticastMessage(
-        notification=messaging.Notification(title=title, body=body),
-        tokens=tokens,
-    )
-    try:
-        response = messaging.send_multicast(message) # Dies verwendet den /batch-Endpunkt
-        print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
-        if response.failure_count > 0:
-            for resp in response.responses:
-                if not resp.success:
-                    print(f"Fehler beim Senden: {resp.exception}")
-    except Exception as e:
-        print(f"Fehler beim Senden der Benachrichtigung: {e}")
+    print(f"Sende Benachrichtigung '{title}' an {len(tokens)} Tokens einzeln...")
+    success_count = 0
+    failure_count = 0
+    for token in tokens:
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            token=token,
+        )
+        try:
+            response = messaging.send(message) # Sende einzelne Nachricht
+            success_count += 1
+            # print(f"  Einzelne Nachricht erfolgreich gesendet an {token[:15]}...: {response}") # Detaillierte Ausgabe
+        except Exception as e:
+            failure_count += 1
+            print(f"  FEHLER beim Senden einer einzelnen Benachrichtigung an {token[:15]}...: {e}")
+
+    print(f"Gesamt: {success_count} erfolgreich gesendet, {failure_count} Fehler.")
 
 
 def run_training_pipeline():
