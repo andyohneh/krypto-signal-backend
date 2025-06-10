@@ -97,7 +97,7 @@ if not firebase_admin._apps:
         print("FEHLER: Firebase-Credentials konnten NICHT geladen werden. Firebase wird NICHT initialisiert.")
 
 
-# --- Hilfsfunktion für Benachrichtigungen (NUR FÜR DEBUGGING MIT EINZELNACHRICHT) ---
+# --- Hilfsfunktion für Benachrichtigungen (Zurück auf MulticastMessage) ---
 def send_notification(title, body, tokens):
     if not tokens:
         print("Keine Tokens für den Versand von Benachrichtigungen vorhanden.")
@@ -107,42 +107,23 @@ def send_notification(title, body, tokens):
         print("Firebase ist nicht initialisiert. Nachricht kann nicht gesendet werden.")
         return
 
-    # --- START DEBUGGING-ÄNDERUNG ---
-    # Sende nur an das ERSTE Token in der Liste, als einfache Nachricht
-    # und nicht als MulticastMessage, um den /batch-Endpunkt zu umgehen
-    if tokens: # Stelle sicher, dass mindestens ein Token existiert
-        message = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            token=tokens[0], # Nimm nur das erste Token
-        )
-        try:
-            response = messaging.send(message) # Sende einzelne Nachricht
-            print(f"DEBUG: Einzelne Nachricht erfolgreich gesendet: {response}")
-        except Exception as e:
-            print(f"DEBUG: Fehler beim Senden einer einzelnen Benachrichtigung: {e}")
-    else:
-        print("DEBUG: Keine Tokens zum Senden einer einzelnen Testnachricht vorhanden.")
-    # --- ENDE DEBUGGING-ÄNDERUNG ---
-
-    # Den ursprünglichen MulticastMessage-Code für diesen Test NICHT verwenden:
-    # message = messaging.MulticastMessage(
-    #     notification=messaging.Notification(title=title, body=body),
-    #     tokens=tokens,
-    # )
-    # try:
-    #     response = messaging.send_multicast(message)
-    #     print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
-    #     if response.failure_count > 0:
-    #         for resp in response.responses:
-    #             if not resp.success:
-    #                 print(f"Fehler beim Senden: {resp.exception}")
-    # except Exception as e:
-    #     print(f"Fehler beim Senden der Benachrichtigung: {e}")
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(title=title, body=body),
+        tokens=tokens,
+    )
+    try:
+        response = messaging.send_multicast(message) # Dies verwendet den /batch-Endpunkt
+        print(f"Erfolgreich {response.success_count} Nachrichten gesendet, {response.failure_count} Fehler.")
+        if response.failure_count > 0:
+            for resp in response.responses:
+                if not resp.success:
+                    print(f"Fehler beim Senden: {resp.exception}")
+    except Exception as e:
+        print(f"Fehler beim Senden der Benachrichtigung: {e}")
 
 
 def run_training_pipeline():
     # Der gesamte Code der Pipeline, der zuvor hier war, bleibt unverändert.
-    # Er wurde nur um den app.run() Block herum angeordnet.
     with app.app_context():
         db.create_all()
 
@@ -308,8 +289,6 @@ def run_training_pipeline():
     print("Trainings-Pipeline abgeschlossen.")
 
 # --- WICHTIG: Entferne den app.run() Aufruf aus dem Cron Job Skript! ---
-# if __name__ == '__main__':
-#    app.run(debug=True, host='0.0.0.0', port=os.getenv("PORT", 5000))
 # Stattdessen nur die run_training_pipeline() Funktion aufrufen
 if __name__ == '__main__':
     run_training_pipeline()
