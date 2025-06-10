@@ -33,10 +33,10 @@ MANIFEST
 # Settings file (kann sensible Daten enthalten oder nutzerspezifisch sein)
 # Wir erstellen sie auf dem Server, also nicht versionieren.
 settings.json 
+serviceAccountKey.json
 
 # IDE / Editor specific files
 .idea/
 .vscode/
 *.swp
 *.swo
-serviceAccountKey.json
