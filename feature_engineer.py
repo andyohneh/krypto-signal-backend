@@ -4,35 +4,32 @@ import pandas_ta as ta
 
 def add_features_to_data(data):
     if data is None or data.empty: return None
-    print("Erstelle Features (SMA, RSI, MACD, ATR & Lags)...")
-    if not all(col in data.columns for col in ['High', 'Low', 'Close', 'Adj Close']):
+    if not all(c in data.columns for c in ['High', 'Low', 'Close', 'Adj Close']):
+        print("FEHLER: Notwendige Spalten für Feature-Erstellung nicht gefunden.")
         return None
+    
+    df = data.copy()
+    price_series = df['Adj Close']
+    
+    df['daily_return'] = price_series.pct_change()
+    df['SMA_10'] = price_series.rolling(window=10).mean()
+    df['SMA_50'] = price_series.rolling(window=50).mean()
+    df['sma_signal'] = np.where(df['SMA_10'] > df['SMA_50'], 1, 0)
+    df['RSI_14'] = ta.rsi(price_series, length=14)
+    df.ta.macd(close=price_series, fast=12, slow=26, signal=9, append=True)
+    df.ta.atr(high=df['High'], low=df['Low'], close=df['Close'], length=14, append=True)
 
-    data_with_features = data.copy()
-    price_series = data_with_features['Adj Close']
+    for i in range(1, 4):
+        df[f'daily_return_lag_{i}'] = df['daily_return'].shift(i)
+        df[f'RSI_14_lag_{i}'] = df['RSI_14'].shift(i)
 
-    # Bisherige Features
-    data_with_features['daily_return'] = price_series.pct_change()
-    data_with_features['SMA_10'] = price_series.rolling(window=10).mean()
-    data_with_features['SMA_50'] = price_series.rolling(window=50).mean()
-    data_with_features['sma_signal'] = np.where(data_with_features['SMA_10'] > data_with_features['SMA_50'], 1, 0)
-    data_with_features['RSI_14'] = ta.rsi(price_series, length=14)
-    macd = ta.macd(price_series, fast=12, slow=26, signal=9)
-    data_with_features = pd.concat([data_with_features, macd], axis=1)
-    data_with_features['ATRr_14'] = ta.atr(data_with_features['High'], data_with_features['Low'], data_with_features['Close'], length=14)
-
-    # NEU: Lag-Features (Das "Gedächtnis")
-    for i in range(1, 4): # Fügt die Werte der letzten 3 Tage hinzu
-        data_with_features[f'daily_return_lag_{i}'] = data_with_features['daily_return'].shift(i)
-        data_with_features[f'RSI_14_lag_{i}'] = data_with_features['RSI_14'].shift(i)
-
-    data_with_features.dropna(inplace=True)
-    return data_with_features
+    df.dropna(inplace=True)
+    return df
 
 def create_regression_targets(data, future_days=7):
     if data is None: return None
-    data_with_targets = data.copy()
-    data_with_targets[f'future_{future_days}d_low'] = data_with_targets['Low'].iloc[::-1].rolling(window=future_days).min().iloc[::-1].shift(-future_days)
-    data_with_targets[f'future_{future_days}d_high'] = data_with_targets['High'].iloc[::-1].rolling(window=future_days).max().iloc[::-1].shift(-future_days)
-    data_with_targets.dropna(inplace=True)
-    return data_with_targets
+    df = data.copy()
+    df[f'future_{future_days}d_low'] = df['Low'].iloc[::-1].rolling(window=future_days).min().iloc[::-1].shift(-future_days)
+    df[f'future_{future_days}d_high'] = df['High'].iloc[::-1].rolling(window=future_days).max().iloc[::-1].shift(-future_days)
+    df.dropna(inplace=True)
+    return df
