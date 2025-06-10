@@ -21,6 +21,8 @@ from feature_engineer import add_features_to_data, create_regression_targets
 from train_model import train_regression_model, FEATURES_LIST
 
 # --- Setup ---
+# WICHTIG: Die Flask-App wird hier nur für den Datenbank-Kontext benötigt,
+# nicht um einen Server zu starten.
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -139,6 +141,8 @@ def send_notification(title, body, tokens):
 
 
 def run_training_pipeline():
+    # Der gesamte Code der Pipeline, der zuvor hier war, bleibt unverändert.
+    # Er wurde nur um den app.run() Block herum angeordnet.
     with app.app_context():
         db.create_all()
 
@@ -303,5 +307,9 @@ def run_training_pipeline():
     
     print("Trainings-Pipeline abgeschlossen.")
 
+# --- WICHTIG: Entferne den app.run() Aufruf aus dem Cron Job Skript! ---
+# if __name__ == '__main__':
+#    app.run(debug=True, host='0.0.0.0', port=os.getenv("PORT", 5000))
+# Stattdessen nur die run_training_pipeline() Funktion aufrufen
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=os.getenv("PORT", 5000))
+    run_training_pipeline()
