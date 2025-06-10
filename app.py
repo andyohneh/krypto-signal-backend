@@ -51,24 +51,15 @@ db = SQLAlchemy(app)
 # --- Datenbank-Modelle ---
 class Settings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    bitcoin_tp_percentage = db.Column(db.Float, default=2.5)
-    bitcoin_sl_percentage = db.Column(db.Float, default=1.5)
-    xauusd_tp_percentage = db.Column(db.Float, default=1.8)
-    xauusd_sl_percentage = db.Column(db.Float, default=0.8)
     update_interval_minutes = db.Column(db.Integer, default=15)
     last_btc_signal = db.Column(db.String(100), default='N/A')
     last_gold_signal = db.Column(db.String(100), default='N/A')
 
 class TrainedModel(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(80), unique=True, nullable=False)
-    data = db.Column(LargeBinary, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
-
+    id = db.Column(db.Integer, primary_key=True); name = db.Column(db.String(80), unique=True, nullable=False); data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 class Device(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    fcm_token = db.Column(db.String(255), unique=True, nullable=False)
-    timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+    id = db.Column(db.Integer, primary_key=True); fcm_token = db.Column(db.String(255), unique=True, nullable=False); timestamp = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+
 
 # --- Globale Variablen für geladene Artefakte ---
 current_settings = {}
