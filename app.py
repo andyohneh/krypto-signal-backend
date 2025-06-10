@@ -125,26 +125,44 @@ load_artifacts_from_db()
 def home():
     return "Krypto Helfer 2.0 - Regressions-Modelle sind live!"
 
+# In app.py
+
 @app.route('/get_chart_data/<ticker_symbol>')
 def get_chart_data(ticker_symbol):
     try:
-        data = download_historical_data(ticker_symbol, period="6mo", interval="1d")
-        if data is None: return jsonify({"error": "Rohdaten laden fehlgeschlagen"}), 500
-        
+        # Wir laden etwas mehr Daten, um sicherzugehen
+        data = download_historical_data(ticker_symbol, period="8mo", interval="1d")
+
+        if data is None or data.empty:
+            print(f"Keine Rohdaten für {ticker_symbol} gefunden.")
+            return jsonify({"error": f"Keine Rohdaten für {ticker_symbol}."}), 404
+
+        # Berechne nur die für den Chart nötigen Indikatoren
         import pandas_ta as ta
         data['SMA_10'] = data['Adj Close'].rolling(window=10).mean()
         data['SMA_50'] = data['Adj Close'].rolling(window=50).mean()
         data['RSI_14'] = ta.rsi(data['Adj Close'], length=14)
-        
+
+        # Entferne Zeilen mit leeren Werten, die am Anfang durch die Berechnung entstehen
+        data.dropna(inplace=True)
+
+        # NEUE, WICHTIGE PRÜFUNG: Ist nach der Bereinigung noch etwas übrig?
+        if data.empty:
+            print(f"Nicht genügend Daten für {ticker_symbol} nach Feature-Berechnung.")
+            return jsonify({"error": f"Zu wenig Daten für Chart für {ticker_symbol}."}), 500
+
+        # Wähle Spalten aus und benenne sie um
         chart_columns = ['Adj Close', 'SMA_10', 'SMA_50', 'RSI_14']
         chart_data = data[chart_columns].copy()
         chart_data.rename(columns={'Adj Close': 'price', 'SMA_10': 'sma_short', 'SMA_50': 'sma_long', 'RSI_14': 'rsi'}, inplace=True)
-        
+
         chart_data.reset_index(inplace=True)
         chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
-        
-        return jsonify(chart_data.dropna().to_dict(orient="records"))
+
+        return jsonify(chart_data.to_dict(orient="records"))
+
     except Exception as e:
+        print(f"Kritischer Fehler bei /get_chart_data für {ticker_symbol}: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/get_signals')
