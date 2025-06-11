@@ -1,3 +1,5 @@
+# app.py (Die absolut finale Version)
+
 import os
 import json
 import requests
@@ -12,20 +14,16 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 from dotenv import load_dotenv
 
-# Importiere unsere Helfer-Funktionen und die zentrale Feature-Liste
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data
 from train_model import FEATURES_LIST
 
-# Lade .env-Datei für die lokale Entwicklung
 load_dotenv()
-
-# --- App-Initialisierung ---
 app = Flask(__name__)
 
 # --- Robuste Firebase-Initialisierung ---
+cred = None
 if not firebase_admin._apps:
-    cred = None
     try:
         # 1. Versuch: Lade aus lokaler Datei (für deinen PC)
         cred = credentials.Certificate("serviceAccountKey.json")
@@ -51,7 +49,6 @@ if not firebase_admin._apps:
             # App wurde möglicherweise bereits in einem anderen Prozess initialisiert
             print("Firebase App wurde bereits initialisiert.")
 
-
 # --- Datenbank-Konfiguration & Modelle ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -62,6 +59,10 @@ class Settings(db.Model):
     update_interval_minutes = db.Column(Integer, default=15)
     last_btc_signal = db.Column(String(100), default='N/A')
     last_gold_signal = db.Column(String(100), default='N/A')
+    btc_entry_threshold = db.Column(Float, default=5.0)
+    btc_sl_multiplier = db.Column(Float, default=1.5)
+    gold_entry_threshold = db.Column(Float, default=5.0)
+    gold_sl_multiplier = db.Column(Float, default=1.5)
 
 class TrainedModel(db.Model):
     id = db.Column(Integer, primary_key=True); name = db.Column(String(80), unique=True, nullable=False); data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -73,7 +74,6 @@ class BacktestResult(db.Model):
 # --- Globale Variablen & Helfer-Funktionen ---
 models = {}
 current_settings = {}
-
 def load_artifacts_from_db():
     global models
     with app.app_context():
@@ -121,8 +121,7 @@ load_artifacts_from_db()
 
 # --- API-Routen ---
 @app.route('/')
-def home():
-    return "Krypto Helfer 2.0"
+def home(): return "Krypto Helfer 2.0 ist live!"
 
 @app.route('/get_chart_data/<ticker_symbol>')
 def get_chart_data(ticker_symbol):
@@ -137,8 +136,7 @@ def get_chart_data(ticker_symbol):
         chart_columns = ['Adj Close', 'SMA_10', 'SMA_50', 'RSI_14']
         chart_data = data[chart_columns].copy()
         chart_data.rename(columns={'Adj Close': 'price', 'SMA_10': 'sma_short', 'SMA_50': 'sma_long', 'RSI_14': 'rsi'}, inplace=True)
-        chart_data.reset_index(inplace=True)
-        chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
+        chart_data.reset_index(inplace=True); chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
         return jsonify(chart_data.to_dict(orient="records"))
     except Exception as e:
         print(f"Kritischer Fehler bei /get_chart_data für {ticker_symbol}: {e}")
@@ -159,33 +157,45 @@ def get_signals():
     global current_settings
     bitcoin_data, gold_data, error_msg = {}, {}, ""
     btc_keys = ['btc_low_model', 'btc_low_scaler', 'btc_high_model', 'btc_high_scaler']
-    if all(k in models for k in btc_keys):
+    if all(k in models for k in ['btc_low_model', 'btc_low_scaler', 'btc_high_model', 'btc_high_scaler']):
         try:
             current_price = float(requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT").json()['price'])
             latest_features_df = get_live_features_for_regression("BTC-USD")
             if latest_features_df is not None:
-                low_pred = models['btc_low_model'].predict(models['btc_low_scaler'].transform(latest_features_df))[0]
-                high_pred = models['btc_high_model'].predict(models['btc_high_scaler'].transform(latest_features_df))[0]
-                sl = low_pred - (latest_features_df['ATRr_14'].iloc[0] * 1.5)
-                bitcoin_data = {"price": round(current_price, 2), "entry": round(low_pred, 2), "take_profit": round(high_pred, 2), "stop_loss": round(sl, 2)}
-            else: error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
-        except Exception as e: error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"price":"Fehler"}
-    else: error_msg += "BTC Modelle nicht geladen. "
+                predicted_low = models['btc_low_model'].predict(models['btc_low_scaler'].transform(latest_features_df))[0]
+                predicted_high = models['btc_high_model'].predict(models['btc_high_scaler'].transform(latest_features_df))[0]
+                atr_value = latest_features_df['ATRr_14'].iloc[0]
+                stop_loss = predicted_low - (atr_value * 1.5)
+                bitcoin_data = {"price": round(current_price, 2), "entry": round(predicted_low, 2), "take_profit": round(predicted_high, 2), "stop_loss": round(stop_loss, 2)}
+            else:
+                error_msg += "BTC Feature-Erstellung fehlgeschlagen. "
+        except Exception as e:
+            error_msg += f"BTC Fehler: {e}. "; bitcoin_data={"price":"Fehler"}
+    else:
+        error_msg += "BTC Modelle nicht geladen. "
     
     gold_keys = ['gold_low_model', 'gold_low_scaler', 'gold_high_model', 'gold_high_scaler']
-    if all(k in models for k in gold_keys):
+    if all(k in models for k in ['gold_low_model', 'gold_low_scaler', 'gold_high_model', 'gold_high_scaler']):
         try:
             FMP_API_KEY = os.environ.get('FMP_API_KEY')
             current_price = float(requests.get(f'https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API_KEY}').json()[0]['price'])
             latest_features_df = get_live_features_for_regression("GC=F")
             if latest_features_df is not None:
-                low_pred = models['gold_low_model'].predict(models['gold_low_scaler'].transform(latest_features_df))[0]
-                high_pred = models['gold_high_model'].predict(models['gold_high_scaler'].transform(latest_features_df))[0]
-                sl = low_pred - (latest_features_df['ATRr_14'].iloc[0] * 1.5)
-                gold_data = {"price": round(current_price, 2), "entry": round(low_pred, 2), "take_profit": round(high_pred, 2), "stop_loss": round(sl, 2)}
-            else: error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
-        except Exception as e: error_msg += f"Gold Fehler: {e}. "; gold_data={"price":"Fehler"}
-    else: error_msg += "Gold Modelle nicht geladen. "
+                # KORREKTUR: Eigene Vorhersagen für Gold berechnen
+                predicted_low_gold = models['gold_low_model'].predict(models['gold_low_scaler'].transform(latest_features_df))[0]
+                predicted_high_gold = models['gold_high_model'].predict(models['gold_high_scaler'].transform(latest_features_df))[0]
+                
+                # KORREKTUR: Eigene Variable für Stop-Loss verwenden
+                atr_value = latest_features_df['ATRr_14'].iloc[0]
+                stop_loss_gold = predicted_low_gold - (atr_value * 1.5)
+                
+                gold_data = {"price": round(current_price, 2), "entry": round(predicted_low_gold, 2), "take_profit": round(predicted_high_gold, 2), "stop_loss": round(stop_loss_gold, 2)}
+            else:
+                error_msg += "Gold Feature-Erstellung fehlgeschlagen. "
+        except Exception as e:
+            error_msg += f"Gold Fehler: {e}. "; gold_data={"price":"Fehler"}
+    else:
+        error_msg += "Gold Modelle nicht geladen. "
     
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
