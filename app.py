@@ -12,20 +12,26 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 from dotenv import load_dotenv
 
+# Importiere unsere Helfer-Funktionen und die zentrale Feature-Liste
 from data_manager import download_historical_data
 from feature_engineer import add_features_to_data
 from train_model import FEATURES_LIST
 
+# Lade .env-Datei für die lokale Entwicklung
 load_dotenv()
+
+# --- App-Initialisierung ---
 app = Flask(__name__)
 
 # --- Robuste Firebase-Initialisierung ---
-cred = None
 if not firebase_admin._apps:
+    cred = None
     try:
+        # 1. Versuch: Lade aus lokaler Datei (für deinen PC)
         cred = credentials.Certificate("serviceAccountKey.json")
         print("Firebase-Credentials aus lokaler Datei geladen.")
     except FileNotFoundError:
+        # 2. Versuch: Lade aus Umgebungsvariable (für Render)
         print("Lokale Schlüsseldatei nicht gefunden. Versuche Umgebungsvariable...")
         try:
             cred_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
@@ -33,17 +39,19 @@ if not firebase_admin._apps:
                 cred = credentials.Certificate(json.loads(cred_str))
                 print("Firebase-Credentials aus Umgebungsvariable geladen.")
             else:
-                cred = None
+                print("WARNUNG: FIREBASE_SERVICE_ACCOUNT_JSON Variable nicht gefunden.")
         except Exception as e:
-            cred = None
             print(f"Fehler beim Parsen der Firebase-Credentials: {e}")
+    
     if cred:
         try:
             firebase_admin.initialize_app(cred)
             print("Firebase Admin SDK initialisiert.")
         except ValueError:
+            # App wurde möglicherweise bereits in einem anderen Prozess initialisiert
             print("Firebase App wurde bereits initialisiert.")
-            
+
+
 # --- Datenbank-Konfiguration & Modelle ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -56,32 +64,27 @@ class Settings(db.Model):
     last_gold_signal = db.Column(String(100), default='N/A')
 
 class TrainedModel(db.Model):
-    id = db.Column(Integer, primary_key=True)
-    name = db.Column(String(80), unique=True, nullable=False)
-    data = db.Column(LargeBinary, nullable=False)
-    timestamp = db.Column(DateTime, server_default=func.now(), onupdate=func.now())
-
+    id = db.Column(Integer, primary_key=True); name = db.Column(String(80), unique=True, nullable=False); data = db.Column(LargeBinary, nullable=False); timestamp = db.Column(DateTime, server_default=func.now(), onupdate=func.now())
 class Device(db.Model):
-    id = db.Column(Integer, primary_key=True)
-    fcm_token = db.Column(String(255), unique=True, nullable=False)
-    timestamp = db.Column(DateTime, server_default=func.now(), onupdate=func.now())
-
+    id = db.Column(Integer, primary_key=True); fcm_token = db.Column(String(255), unique=True, nullable=False); timestamp = db.Column(DateTime, server_default=func.now(), onupdate=func.now())
 class BacktestResult(db.Model):
-    id = db.Column(Integer, primary_key=True)
-    asset_name = db.Column(String(50), nullable=False)
-    date = db.Column(DateTime, nullable=False)
-    balance = db.Column(Float, nullable=False)
+    id = db.Column(Integer, primary_key=True); asset_name = db.Column(String(50), nullable=False); date = db.Column(DateTime, nullable=False); balance = db.Column(Float, nullable=False)
 
-# --- Globale Variablen & Helfer ---
+# --- Globale Variablen & Helfer-Funktionen ---
 models = {}
 current_settings = {}
+
 def load_artifacts_from_db():
     global models
     with app.app_context():
         try:
-            for m in TrainedModel.query.all():
+            db_models = TrainedModel.query.all()
+            for m in db_models:
                 models[m.name] = pickle.loads(m.data)
-            print(f"Erfolgreich {len(models)} Artefakte aus der DB geladen.")
+            if models:
+                print(f"Erfolgreich {len(models)} Artefakte aus der DB geladen.")
+            else:
+                print("WARNUNG: Keine Modelle in der DB gefunden. Bitte Cron Job ausführen.")
         except Exception as e:
             print(f"FEHLER beim Laden der Artefakte aus der DB: {e}")
 
@@ -118,7 +121,8 @@ load_artifacts_from_db()
 
 # --- API-Routen ---
 @app.route('/')
-def home(): return "Krypto Helfer 2.0"
+def home():
+    return "Krypto Helfer 2.0"
 
 @app.route('/get_chart_data/<ticker_symbol>')
 def get_chart_data(ticker_symbol):
@@ -133,10 +137,21 @@ def get_chart_data(ticker_symbol):
         chart_columns = ['Adj Close', 'SMA_10', 'SMA_50', 'RSI_14']
         chart_data = data[chart_columns].copy()
         chart_data.rename(columns={'Adj Close': 'price', 'SMA_10': 'sma_short', 'SMA_50': 'sma_long', 'RSI_14': 'rsi'}, inplace=True)
-        chart_data.reset_index(inplace=True); chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
+        chart_data.reset_index(inplace=True)
+        chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
         return jsonify(chart_data.to_dict(orient="records"))
     except Exception as e:
         print(f"Kritischer Fehler bei /get_chart_data für {ticker_symbol}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/get_backtest_results/<ticker_symbol>')
+def get_backtest_results(ticker_symbol):
+    try:
+        results = BacktestResult.query.filter_by(asset_name=ticker_symbol).order_by(BacktestResult.date).all()
+        if not results: return jsonify({"error": f"Keine Backtest-Daten für {ticker_symbol}."}), 404
+        data = [{"date": r.date.strftime('%Y-%m-%d'), "balance": r.balance} for r in results]
+        return jsonify(data)
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/get_signals')
@@ -175,7 +190,7 @@ def get_signals():
     response = {"bitcoin": bitcoin_data, "gold": gold_data, "settings": current_settings}
     if error_msg: response["global_error"] = error_msg.strip()
     return jsonify(response)
-
+    
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
     global current_settings; data = request.get_json()
@@ -198,10 +213,13 @@ def register_device():
 @app.route('/send_test_notification', methods=['POST'])
 def send_test_notification():
     data = request.get_json(); token = data.get('token')
-    if not token: return jsonify({"status": "error"}), 400
-    if not firebase_admin._apps: return jsonify({"status": "error", "message": "Firebase nicht initialisiert."}), 500
+    if not token or not firebase_admin._apps: return jsonify({"status": "error"}), 400
     try:
         message = messaging.Message(notification=messaging.Notification(title='Test!', body='Funktioniert! 🎉'), token=token)
         response = messaging.send(message)
         return jsonify({"status": "success", "response": str(response)})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
