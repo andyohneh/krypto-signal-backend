@@ -11,6 +11,12 @@ class Settings(db.Model):
     update_interval_minutes = db.Column(Integer, default=15)
     last_btc_signal = db.Column(String(100), default='N/A')
     last_gold_signal = db.Column(String(100), default='N/A')
+    
+    # NEU: Speicher für die besten Strategie-Parameter
+    btc_entry_threshold = db.Column(Float, default=5.0)
+    btc_sl_multiplier = db.Column(Float, default=1.5)
+    gold_entry_threshold = db.Column(Float, default=5.0)
+    gold_sl_multiplier = db.Column(Float, default=1.5)
 
 class TrainedModel(db.Model):
     __tablename__ = 'trained_model'
