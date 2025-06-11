@@ -60,6 +60,12 @@ class TrainedModel(db.Model):
     id=db.Column(db.Integer, primary_key=True); name=db.Column(db.String(80), unique=True, nullable=False); data=db.Column(LargeBinary, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
 class Device(db.Model):
     id=db.Column(db.Integer, primary_key=True); fcm_token=db.Column(db.String(255), unique=True, nullable=False); timestamp=db.Column(db.DateTime, server_default=func.now(), onupdate=func.now())
+    
+class BacktestResult(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    asset_name = db.Column(db.String(50), nullable=False)
+    date = db.Column(db.DateTime, nullable=False)
+    balance = db.Column(db.Float, nullable=False)
 
 # --- Globale Variablen & Helfer-Funktionen ---
 models = {}
@@ -179,6 +185,23 @@ def get_signals():
     if error_msg:
         response["global_error"] = error_msg.strip()
     return jsonify(response)
+
+@app.route('/get_backtest_results/<ticker_symbol>')
+def get_backtest_results(ticker_symbol):
+    try:
+        results = BacktestResult.query.filter_by(asset_name=ticker_symbol).order_by(BacktestResult.date).all()
+        if not results:
+            return jsonify({"error": f"Keine Backtest-Daten für {ticker_symbol} gefunden."}), 404
+        
+        # Konvertiere die Daten in ein JSON-freundliches Format
+        data = [
+            {"date": r.date.strftime('%Y-%m-%d'), "balance": r.balance}
+            for r in results
+        ]
+        return jsonify(data)
+    except Exception as e:
+        print(f"Fehler bei /get_backtest_results: {e}")
+        return jsonify({"error": str(e)}), 500
     
 @app.route('/save_settings', methods=['POST'])
 def save_app_settings():
